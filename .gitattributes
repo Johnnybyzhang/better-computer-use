@@ -1,0 +1,7 @@
+* text=auto
+*.cs text eol=lf
+*.py text eol=lf
+*.ps1 text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.cmd text eol=crlf

@@ -1,0 +1,17 @@
+.reference/
+.tools/
+**/bin/
+**/obj/
+artifacts/
+*.local.json
+
+.vs/
+.vscode/
+__pycache__/
+*.pyc
+*.pcap
+*.pcapng
+*.dmp
+*.log
+.env
+.env.*

@@ -1,0 +1,27 @@
+{
+  "name": "better-computer-use",
+  "version": "0.1.5",
+  "description": "Use ChatGPT's Computer Use executable in a separate Windows child session.",
+  "author": {
+    "name": "Better Computer Use contributors"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Better Computer Use",
+    "shortDescription": "Automate a separate Windows desktop.",
+    "longDescription": "Runs the locally installed Computer Use executable in a managed Windows child session, with authenticated IPC, session-bound MCP tools and an optional View / Take control viewer. Requires the Windows ChatGPT/Codex Computer Use runtime. Independent integration; not an OpenAI product.",
+    "developerName": "Better Computer Use contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Start a separate desktop for computer use",
+      "Show my child-session desktop"
+    ],
+    "brandColor": "#2563EB"
+  }
+}

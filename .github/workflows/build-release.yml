@@ -1,0 +1,108 @@
+name: Build and release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate release policy
+        run: python scripts/test_release_metadata.py
+      - id: version
+        run: python scripts/release_metadata.py
+
+  build:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: win-x64
+            runner: windows-latest
+          - runtime: win-arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build and noninteractive tests
+        run: ./scripts/build.ps1 -Test -Ci
+      - name: Package native architecture
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          TARGET_RUNTIME: ${{ matrix.runtime }}
+          BUILD_ID: ${{ github.run_id }}.${{ github.run_attempt }}
+        run: ./scripts/package.ps1 -Version $env:RELEASE_VERSION -Runtime $env:TARGET_RUNTIME -BuildId $env:BUILD_ID
+      - name: Validate archive and native executable
+        run: ./scripts/verify-release.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bundle-${{ matrix.runtime }}
+          path: |
+            artifacts/*.zip
+            artifacts/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [metadata, build]
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: dist
+      - name: Publish snapshot or tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find dist -name '*.zip' | wc -l)" -eq 2
+          (cd dist && sha256sum --check *.sha256)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            cp "docs/release-notes/$RELEASE_TAG.md" notes.md
+          else
+            printf '%s\n' "# Development snapshot" "Automated build of main. Includes Windows x64 and ARM64 self-contained bundles." "OpenAI Computer Use is not included. See README for setup and docs/validation.md for limitations." > notes.md
+          fi
+          printf '\n%s\n' "Commit: $GITHUB_SHA" "Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> notes.md
+          flags=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            flags+=(--verify-tag)
+          else
+            printf '%s\n' "Automated development snapshot; not a versioned release." >> notes.md
+          fi
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease --latest=false); else flags+=(--latest); fi
+          gh release create "$RELEASE_TAG" dist/*.zip dist/*.sha256 --target "$GITHUB_SHA" --title "$RELEASE_VERSION" --notes-file notes.md "${flags[@]}"
