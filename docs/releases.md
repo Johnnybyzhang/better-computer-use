@@ -38,5 +38,5 @@ Use `main` as the default branch, enable Actions and private vulnerability repor
 and protect the default branch and version tags according to your maintainer access
 policy. The Windows ARM runner requires an eligible repository/plan; the standard
 public runner is the intended target. Publish a first snapshot and inspect both CI
-jobs before tagging a versioned release. This local preparation has not executed
-GitHub-hosted CI or created a remote repository.
+jobs before tagging a versioned release. The initial public snapshot has passed both native architecture jobs and publication;
+maintainers should review the corresponding CI run for each subsequent release.

@@ -28,10 +28,11 @@ binary's help entrypoint. Tests requiring an interactive RDP desktop, an uneleva
 host, or suspended GUI/console startup are explicitly skipped and counted under
 `-Ci`. No CI job attempts to grant UAC or requires an OpenAI installation.
 
-The workflow passed local actionlint validation and five release-policy tests, but
-GitHub-hosted execution has not yet occurred. Both architectures cross-build and
-pass extracted-bundle checksum/PE architecture checks locally; the x64 binary also
-passes native execution checks.
+The workflow passed local actionlint validation and five release-policy tests. The
+initial public GitHub Actions run passed native Windows x64 and ARM64 builds, the
+noninteractive tests, bundle extraction/checksums, executable architecture validation
+and native help-entrypoint execution, then published both snapshot bundles. Local
+x64 live checks remain separate from these hosted checks.
 
 Hosted build success does not establish end-to-end Windows on ARM compatibility.
 The local OpenAI helper, RDP ActiveX registration, session behavior and elevation
