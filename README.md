@@ -30,8 +30,7 @@ attribution and licensing boundaries.
 
 ## Install
 
-Download the **Windows x64** or **Windows ARM64** ZIP from this repository's Releases
-page, extract it, and run `Install.cmd`. Start a new ChatGPT/Codex task afterward.
+Download the **Windows x64** or **Windows ARM64** ZIP from the [Releases page](https://github.com/Johnnybyzhang/better-computer-use/releases), extract it, and run `Install.cmd`. Start a new ChatGPT/Codex task afterward.
 The installer verifies bundle checksums and installs a per-user local plugin,
 preserving other marketplace entries and backing up the previous plugin version.
 
