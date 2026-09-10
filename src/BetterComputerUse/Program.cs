@@ -39,8 +39,15 @@ internal static class Program
                     rdpActiveXInstalled = Type.GetTypeFromCLSID(new Guid("A0C63C30-F08D-4AB4-907C-34905D770C7D")) is not null }, Wire.Json));
                 return 0;
             }
-            if (args[0] != "mcp") throw new ArgumentException("Use mcp or doctor.");
+            if (args[0] is not ("mcp" or "desktop-host")) throw new ArgumentException("Use mcp or doctor.");
             if (Native.Elevated) throw new InvalidOperationException("The MCP manager must run unelevated. Elevation is a separate worker role.");
+            if (args[0] == "mcp")
+            {
+                using var client = new DesktopClient(args.Skip(1).ToArray());
+                new McpServer(client, args.Contains("--allow-elevation")).RunAsync().GetAwaiter().GetResult();
+                return 0;
+            }
+            helper ??= HelperIdentity.FindInstalled();
             Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
             Application.EnableVisualStyles();
             using var dispatcher = new Control();
@@ -52,7 +59,7 @@ internal static class Program
                 try
                 {
                     await using var manager = new SessionManager(dispatcher, helper, args.Contains("--allow-elevation"));
-                    await new McpServer(manager, args.Contains("--allow-elevation")).RunAsync();
+                    await DesktopHost.RunAsync(manager);
                 }
                 catch (Exception ex) { Console.Error.WriteLine(ex.GetBaseException().Message); exitCode = 1; }
                 finally { await dispatcher.InvokeAsync(loop.ExitThread); }

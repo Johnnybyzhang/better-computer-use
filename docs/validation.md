@@ -1,6 +1,47 @@
 # Validation and known limitations
 
-## Checked locally
+## Shared desktop and PiP revision (2026-09-11)
+
+Checked locally on Windows x64 before pushing the PR:
+
+- 59 tests passed with no interactive checks skipped: existing identity/IPC/elevation
+  checks plus two-click takeover, native RDP input disabling, manual/automatic return,
+  click-out decision logic, minimize-to-PiP, pending takeover cancellation and agent
+  binding invalidation.
+- The CI-mode build passed 44 tests, explicitly skipping 15 interactive/unelevated
+  checks, and published the local application output with no compiler warnings.
+- `python scripts/smoke_multi_task.py --live --mode user`: three independent MCP
+  processes shared a host, attached as observer/controller, handed control A/B/A,
+  rejected stale input, exited, and reattached to the same session and worker.
+- `python scripts/smoke_viewer.py`: exercised the actual host window's click handlers
+  and checked native visibility through PiP/large transitions, input pause, selecting
+  another agent during human control, collapse-to-resume and read-only expansion.
+  These are synthetic window messages, not physical mouse tests.
+- `python scripts/smoke_preservation.py --crash-host`: a child-bound test GUI kept
+  unsaved TextBox content and the same PID through agent handoff, all-client exit,
+  host termination and RDP reconnection. Fresh samples after recovery matched the
+  in-memory document. It also verified that an existing MCP client reconnects a
+  broken host pipe with one session_start. The test closes only its own GUI, not
+  the existing desktop.
+- `python scripts/smoke_mcp.py`: stdio protocol, discovery and invalid-binding checks.
+
+The outer Windows session was disconnected. Physical mouse/focus behavior, secure
+UAC desktop transitions, multi-monitor/DPI behavior and live remote-pixel rendering
+still need an active-desktop walkthrough. PrintWindow verified window chrome but
+cannot establish DirectX RDP preview rendering in that environment. Live shared-host
+checks used explicit user mode; admin/UAC mode selection was covered by the automated
+suite, not a fresh manual UAC interaction in this revision. A native Git CMD launch
+reported no targetable window despite starting child-session processes; it was not
+retried. The preservation test used a dedicated child-bound test GUI instead of
+claiming that native app discovery/launch had passed.
+
+For normal testing on an existing desktop, use the shared-host scripts above.
+`smoke_preservation.py --crash-host` deliberately terminates this build's shared host;
+run it only with other test clients disconnected. The original `smoke_mcp.py --live`
+is destructive lifecycle validation and refuses an existing desktop unless its
+explicit recovery option is used.
+
+## Earlier release validation
 
 - 51 automated checks cover protocol framing, binding validation, helper transport,
   request-level authorization, process identity, suspended launch, desktop locking,
@@ -43,8 +84,8 @@ must be checked together on a real Windows on ARM installation.
 - **Session stop cleanup:** a repeated-session stress test exposed an intermittent
   `session_stop` cleanup hang after Windows had logged off the desktop. This remains
   unresolved. Do not describe repeated teardown as fully validated.
-- **UI:** the viewer is functional but basic. Layout, DPI behavior, clearer connection
-  and control states, and general visual polish are deferred to a later version.
+- **UI:** PiP and shared handoff are implemented. Physical click-out, secure-desktop
+  interactions, multi-monitor/DPI transitions and interactive ARM64 need validation.
 - **Private protocol:** installed OpenAI runtime updates can change executable paths,
   native tool schemas or authorization behavior. Restart after runtime updates.
 - **Platform coverage:** Windows Home is excluded by default; macOS uses built-in
@@ -62,6 +103,6 @@ logoff/recovery. Do not close another task's desktop merely to make a test pass.
 
 `scripts/smoke_mcp.py --live --mode admin` or `--mode user` runs a live helper test.
 `--recover-existing` additionally authorizes closing the existing abandoned desktop;
-it is intentionally opt-in. `scripts/smoke_multi_task.py --live` stresses ownership
-and handoff. `scripts/smoke_app_server.py --codex <CLI>` verifies actual app-server
+it is intentionally opt-in. `scripts/smoke_multi_task.py --live` tests shared attachment
+and handoff without logging off the desktop. `scripts/smoke_app_server.py --codex <CLI>` verifies actual app-server
 plugin loading without model calls.

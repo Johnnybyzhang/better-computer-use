@@ -13,6 +13,8 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
     private string? lastError;
     private string workerMode = "uninitialized";
     private bool uacDeclined;
+    private bool agentConnected;
+    private int desktopWidth = 1920, desktopHeight = 1080;
     internal bool AdminToolsAvailable => workerMode != "user";
     private volatile bool humanControl;
     private volatile bool connectionLost;
@@ -21,6 +23,12 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
 
     private async Task<T> Ui<T>(Func<T> action) => await dispatcher.InvokeAsync(action, lifetime.Token);
     private async Task Ui(Action action) => await dispatcher.InvokeAsync(action, lifetime.Token);
+
+    internal Task SetAgentConnectedAsync(bool connected) => Ui(() =>
+    {
+        agentConnected = connected;
+        viewer?.SetAgentConnected(connected);
+    });
 
     internal async Task<object> StatusAsync()
     {
@@ -31,8 +39,9 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
                 parentSessionId = Native.CurrentSession, sessionId = binding?.SessionId, generation = binding?.Generation,
                 workerPid = worker?.WorkerPid, helperPid = worker?.HelperPid, helper,
                 humanControl, viewerVisible = viewer is not null && await Ui(() => viewer.ViewerVisible),
+                viewerMode = viewer is null ? "hidden" : await Ui(() => viewer.ViewMode),
                 elevationEnabled = workerMode == "admin", mode = workerMode, uacDeclined, lastError,
-                existingChildSession = DisconnectedSessionRecovery.Windows().Inspect() };
+                existingChildSession = desktopLease is null ? DisconnectedSessionRecovery.Windows().Inspect() : new { sessionId = binding?.SessionId, canLogoff = false, reason = "Shared desktop is managed here. Other agents can attach with session_start or take over with session_take_control." } };
         }
         finally { gate.Release(); }
     }
@@ -46,13 +55,37 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
         DesktopLease? acquiredLease = null;
         try
         {
-            if (viewer is not null) throw new InvalidOperationException("A session is already managed. Stop it before starting another.");
+            if (viewer is not null && !connectionLost && worker is { IsAlive: true } && state == "ready")
+            {
+                if (show) await Ui(() => viewer.SetViewer(true));
+                return new { state, binding!.SessionId, binding.Generation, workerPid = worker.WorkerPid,
+                    helperPid = worker.HelperPid, mode = workerMode, helperElevated = workerMode == "admin", uacDeclined };
+            }
+            if (humanControl) throw new InvalidOperationException("Desktop recovery is waiting for you to return control in the viewer.");
+            if (viewer is not null)
+            {
+                width = desktopWidth; height = desktopHeight; mode = workerMode;
+                worker?.Dispose(); worker = null;
+                await Ui(() => viewer.CloseHost()); viewer = null;
+                desktopLease?.Dispose(); desktopLease = null;
+            }
             if (helper is null) throw new InvalidOperationException("No installed Computer Use helper was found. Initialize Computer Use in the ChatGPT/Codex app, then restart this MCP server; or launch with --helper <installed codex-computer-use.exe>.");
             helper.Verify();
             if (Native.CurrentSession == 0 || Native.Elevated) throw new InvalidOperationException("Start the manager unelevated in an interactive Windows session.");
             acquiredLease = DesktopLease.Acquire();
             desktopLease = acquiredLease;
-            if (Native.ChildSession() is not null) throw new InvalidOperationException("An existing child session is present. Read session_status; if existingChildSession.canLogoff is true and a fresh desktop is intended, call session_logoff with its sessionId, then session_start.");
+            var existing = Native.ChildSession();
+            if (existing is int existingId)
+            {
+                Native.VerifyChildSession(existingId);
+                using var settling = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                settling.CancelAfter(TimeSpan.FromSeconds(10));
+                while (Native.SessionConnectionState(existingId) != 4)
+                {
+                    Native.VerifyChildSession(existingId);
+                    await Task.Delay(100, settling.Token);
+                }
+            }
             Native.Check(Native.WTSIsChildSessionsEnabled(out var enabled));
             if (!enabled)
             {
@@ -61,15 +94,16 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
             }
             startupBegun = true;
             workerMode = mode; uacDeclined = false;
+            desktopWidth = width; desktopHeight = height;
             state = "connecting"; connectionLost = false; lastError = null;
             viewer = await Ui(() =>
             {
                 var window = new RdpWindow();
-                window.Rdp.Lost += reason => { connectionLost = true; lastError = reason; worker?.Dispose(); };
+                window.Rdp.Lost += reason => { connectionLost = true; lastError = reason; window.SetConnectionStatus("Disconnected - reconnect to resume"); worker?.Dispose(); };
                 window.ControlRequested += requested => _ = ChangeControlAsync(requested);
                 try
                 {
-                    window.Show(); window.SetHumanControl(false); window.Rdp.Connect(width, height);
+                    window.Show(); window.SetHumanControl(false); window.SetAgentConnected(agentConnected); window.SetConnectionStatus("Connecting..."); window.Rdp.Connect(width, height);
                     window.SetViewer(show);
                     return window;
                 }
@@ -79,13 +113,15 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
             timeout.CancelAfter(TimeSpan.FromSeconds(60));
             await viewer.Rdp.Login.Task.WaitAsync(timeout.Token);
             var child = Native.ChildSession() ?? throw new InvalidOperationException("RDP logged in without a child session ID.");
-            if (child == Native.CurrentSession || child == 0) throw new InvalidOperationException("Unsafe child session ID.");
+            Native.VerifyChildSession(child);
+            if (existing is not null && existing != child) throw new InvalidOperationException("Child session changed during reconnect; refusing to route input.");
             binding = new Binding(child, Guid.NewGuid().ToString("N"));
             state = "starting-worker";
             timeout.CancelAfter(TimeSpan.FromMinutes(3));
             worker = await StartSessionWorkerAsync(timeout.Token);
             if (connectionLost) throw new IOException("RDP disconnected during worker startup.");
             state = "ready";
+            await Ui(() => viewer!.SetConnectionStatus(null));
             return new { state, binding.SessionId, binding.Generation, workerPid = worker.WorkerPid, helperPid = worker.HelperPid,
                 mode = workerMode, helperElevated = workerMode == "admin", uacDeclined };
         }
@@ -119,7 +155,7 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
         {
             if (revision != Interlocked.Read(ref controlRevision)) return;
             if (viewer is null) return;
-            if (requested && (connectionLost || state != "ready" || !await Ui(() => viewer.ViewerVisible))) { humanControl = false; return; }
+            if (requested && (connectionLost || state != "ready" || !await Ui(() => viewer.ViewerVisible))) { humanControl = false; await Ui(() => viewer.SetHumanControl(false)); return; }
             await Ui(() => viewer.SetHumanControl(requested));
             humanControl = requested;
         }
@@ -239,14 +275,15 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
 
     internal async Task<JsonObject> ComputerAsync(JsonObject args, bool elevated)
     {
+        var observation = args["method"]?.GetValue<string>() is "list_apps" or "list_windows" or "get_window" or "get_window_state";
         if (elevated && !AdminToolsAvailable) throw new InvalidOperationException("Administrator tools are unavailable in user-space mode.");
-        if (humanControl) throw new InvalidOperationException("A person has control. Use View in the viewer to resume automation.");
+        if (humanControl && !observation) throw new InvalidOperationException("A person has control. Use View in the viewer to resume automation.");
         await gate.WaitAsync(lifetime.Token);
         WorkerConnection? oneShot = null;
         try
         {
             Validate(args);
-            if (humanControl) throw new InvalidOperationException("Human takeover is pending.");
+            if (humanControl && !observation) throw new InvalidOperationException("Human takeover is pending.");
             var method = args.RequiredString("method");
             var parameters = args["params"] as JsonObject ?? new JsonObject();
             ComputerMethods.Validate(method, parameters);
@@ -267,7 +304,7 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
             return await NativeAppAuthorization.ExecuteAsync(meta, async authorizedMeta =>
             {
                 Validate(args);
-                if (humanControl) throw new InvalidOperationException("Human takeover is pending.");
+                if (humanControl && !observation) throw new InvalidOperationException("Human takeover is pending.");
                 return await connection.SendAsync(new JsonObject { ["operation"] = "computer", ["method"] = method,
                     ["params"] = parameters.DeepClone(), ["meta"] = authorizedMeta.DeepClone() }, timeout.Token);
             });
@@ -283,6 +320,7 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
             if (binding is null) throw new InvalidOperationException("No owned session binding is available.");
             binding.Validate(args);
             var logoff = args["logoff"]?.GetValue<bool>() ?? false;
+            if (logoff && humanControl) throw new InvalidOperationException("Return human control before ending the desktop.");
             if (logoff && Native.ChildSession() != binding.SessionId) throw new InvalidOperationException("Session changed; refusing logoff.");
             state = "stopping";
             worker?.Dispose(); worker = null;

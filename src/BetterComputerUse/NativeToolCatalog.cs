@@ -42,7 +42,7 @@ internal static class NativeToolCatalog
             ["launch_app"] = "Launch an app by its discovered app ID inside the child session.",
             ["start_audio_recording"] = "Start native computer audio recording in the child session.",
             ["stop_audio_recording"] = "Stop audio recording and return the native audio file result.",
-            ["end_turn"] = "End the native Computer Use turn. Does not release the desktop lock; session_stop does." };
+            ["end_turn"] = "End the native Computer Use turn. Does not detach this agent or end the shared desktop. session_stop detaches this agent." };
         return new JsonObject { ["name"] = method, ["description"] = descriptions.GetValueOrDefault(method, $"Pass through native {method} in the bound child session."),
             ["inputSchema"] = new JsonObject { ["type"] = "object", ["properties"] = properties,
                 ["required"] = System.Text.Json.JsonSerializer.SerializeToNode(required), ["additionalProperties"] = false } };
