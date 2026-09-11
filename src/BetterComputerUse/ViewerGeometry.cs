@@ -14,11 +14,12 @@ internal static class ViewerGeometry
         return new Rectangle(workingArea.X + (workingArea.Width - size.Width) / 2,
             workingArea.Y + (workingArea.Height - size.Height) / 2, size.Width, size.Height);
     }
-    internal static Rectangle Resize(Rectangle proposed, Size desktop, int headerHeight, int edge, Size available)
+    internal static Rectangle Resize(Rectangle proposed, Size desktop, int headerHeight, int edge, Size available, int minimumWidth = 358, int minimumHeight = 84)
     {
         double scale = edge is 3 or 6 ? (proposed.Height - headerHeight - 2d) / desktop.Height : (proposed.Width - 2d) / desktop.Width;
         double maximum = Math.Min(1, Math.Min((available.Width - 2d) / desktop.Width, (available.Height - headerHeight - 2d) / desktop.Height));
-        scale = Math.Clamp(scale, Math.Min(358d / desktop.Width, maximum), maximum);
+        double minimum = Math.Max(minimumWidth / (double)desktop.Width, minimumHeight / (double)desktop.Height);
+        scale = Math.Clamp(scale, Math.Min(minimum, maximum), maximum);
         int width = (int)Math.Round(desktop.Width * scale) + 2, height = (int)Math.Round(desktop.Height * scale) + headerHeight + 2;
         return new Rectangle(edge is 1 or 4 or 7 ? proposed.Right - width : proposed.Left,
             edge is 3 or 4 or 5 ? proposed.Bottom - height : proposed.Top, width, height);

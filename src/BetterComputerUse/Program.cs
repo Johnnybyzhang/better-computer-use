@@ -39,7 +39,7 @@ internal static class Program
                     rdpActiveXInstalled = Type.GetTypeFromCLSID(new Guid("A0C63C30-F08D-4AB4-907C-34905D770C7D")) is not null }, Wire.Json));
                 return 0;
             }
-            if (args[0] is not ("mcp" or "desktop-host")) throw new ArgumentException("Use mcp or doctor.");
+            if (args[0] is not ("mcp" or "desktop-host")) throw new ArgumentException("Use mcp or doctor (desktop-host is an internal role).");
             if (Native.Elevated) throw new InvalidOperationException("The MCP manager must run unelevated. Elevation is a separate worker role.");
             if (args[0] == "mcp")
             {

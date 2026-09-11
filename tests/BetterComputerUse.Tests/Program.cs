@@ -393,7 +393,7 @@ await Test("viewer geometry fits the desktop without grey padding or stretching"
 }));
 await Test("View PiP preserves wide and portrait desktop aspect ratios", () => Sta(() =>
 {
-    foreach (var desktop in new[] { new System.Drawing.Size(1920, 480), new System.Drawing.Size(640, 4096) })
+    foreach (var desktop in new[] { new System.Drawing.Size(1920, 480), new System.Drawing.Size(4096, 480), new System.Drawing.Size(640, 4096) })
     {
         using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }, desktop);
         viewer.Show(); viewer.SetViewer(true);
@@ -404,8 +404,25 @@ await Test("View PiP preserves wide and portrait desktop aspect ratios", () => S
         var panel = viewer.Controls.OfType<System.Windows.Forms.FlowLayoutPanel>().Single();
         foreach (System.Windows.Forms.Control button in panel.Controls)
             Assert(panel.ClientRectangle.Contains(button.Bounds));
+        Assert(viewer.ClientRectangle.Contains(panel.Bounds));
+        viewer.Expand(); viewer.RevealControls();
+        foreach (System.Windows.Forms.Control button in panel.Controls)
+            Assert(panel.ClientRectangle.Contains(button.Bounds));
+        Assert(viewer.ClientRectangle.Contains(panel.Bounds));
         viewer.CloseHost();
     }
+}));
+await Test("desktop geometry profile survives manager recreation and rejects other sessions", () => Sync(() =>
+{
+    var path = Path.Combine(Path.GetTempPath(), "bcu-profile-" + Guid.NewGuid().ToString("N") + ".json");
+    try
+    {
+        new DesktopProfile(42, 640, 4096).Save(path);
+        Assert(DesktopProfile.Load(42, path) == new DesktopProfile(42, 640, 4096));
+        Assert(DesktopProfile.Load(43, path) is null);
+        File.WriteAllText(path, "{}"); Assert(DesktopProfile.Load(42, path) is null);
+    }
+    finally { File.Delete(path); }
 }));
 await Test("View stale callbacks cannot fault a replacement or leave takeover latched", () => Sta(() =>
 {

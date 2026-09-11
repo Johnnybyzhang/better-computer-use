@@ -24,6 +24,7 @@ internal sealed class RdpWindow : Form
     private bool pipHeaderRevealed;
     private readonly ToolTip tips = new();
     private readonly Size desktopSize;
+    private int ExpandedHeaderUnits => desktopSize.Width < desktopSize.Height ? 124 : 38;
     private Point? previewDragStart;
     private Point previewWindowStart;
     private bool previewDragged;
@@ -69,7 +70,7 @@ internal sealed class RdpWindow : Form
         header.Controls.AddRange([title, status, collapse, maximize, close, settingsButton, returnToAgent]);
         collapse.Click += (_, _) => { if (expanded) Collapse(); else SetViewer(false); };
         maximize.Click += (_, _) => ToggleMaximize();
-        close.Click += (_, _) => { if (expanded) Collapse(); else SetViewer(false); };
+        close.Click += (_, _) => SetViewer(false);
         tips.SetToolTip(collapse, "Return to floating view");
         tips.SetToolTip(maximize, "Maximize / restore");
         tips.SetToolTip(close, "Close view");
@@ -141,7 +142,7 @@ internal sealed class RdpWindow : Form
         {
             if (closing) return;
             e.Cancel = true;
-            if (expanded) Collapse(); else SetViewer(false);
+            SetViewer(false);
         };
     }
 
@@ -179,8 +180,9 @@ internal sealed class RdpWindow : Form
         if (message.Msg == 0x214)
         {
             var rect = Marshal.PtrToStructure<ViewerGeometry.NativeRect>(message.LParam);
-            var fitted = ViewerGeometry.Resize(rect.ToRectangle(), desktopSize, expanded ? 38 * DeviceDpi / 96 : 0,
-                (int)message.WParam, Screen.FromControl(this).WorkingArea.Size);
+            var fitted = ViewerGeometry.Resize(rect.ToRectangle(), desktopSize, expanded ? ExpandedHeaderUnits * DeviceDpi / 96 : 0,
+                (int)message.WParam, Screen.FromControl(this).WorkingArea.Size,
+                (expanded && ExpandedHeaderUnits == 38 ? 498 : 358) * DeviceDpi / 96, 84 * DeviceDpi / 96);
             Marshal.StructureToPtr(new ViewerGeometry.NativeRect(fitted), message.LParam, false);
             message.Result = 1; return;
         }
@@ -199,7 +201,7 @@ internal sealed class RdpWindow : Form
     {
         if (!expanded) return;
         if (restoredBounds is Rectangle bounds) { restoredBounds = null; Bounds = bounds; }
-        else { restoredBounds = Bounds; Bounds = ViewerGeometry.Fit(desktopSize, Screen.FromControl(this).WorkingArea, 38 * DeviceDpi / 96, 1); }
+        else { restoredBounds = Bounds; Bounds = ViewerGeometry.Fit(desktopSize, Screen.FromControl(this).WorkingArea, ExpandedHeaderUnits * DeviceDpi / 96, 1); }
     }
     private void LayoutChrome()
     {
@@ -209,8 +211,9 @@ internal sealed class RdpWindow : Form
         // Only PiP hover chrome is an overlay; expanded chrome reserves its own row.
         header.Dock = DockStyle.None;
         header.Visible = expanded || pipHeaderRevealed;
-        header.SetBounds(1, 1, ClientSize.Width - 2, U(38));
-        int previewTop = expanded ? U(38) + 1 : 1;
+        bool portraitHeader = expanded && ExpandedHeaderUnits > 38;
+        header.SetBounds(1, 1, ClientSize.Width - 2, U(expanded ? ExpandedHeaderUnits : 38));
+        int previewTop = expanded ? header.Height + 1 : 1;
         surface.SetBounds(1, previewTop, Math.Max(1, ClientSize.Width - 2), Math.Max(1, ClientSize.Height - previewTop - 1));
         connectionDot.Visible = !expanded && !pipHeaderRevealed;
         connectionDot.SetBounds(ClientSize.Width - U(30), U(10), U(18), U(18));
@@ -224,20 +227,23 @@ internal sealed class RdpWindow : Form
             right -= U(width); control.SetBounds(right, U(4), U(width), U(30));
         }
         Place(close, true, 30);
-        Place(maximize, expanded, 30);
+        Place(maximize, expanded && !portraitHeader, 30);
         Place(collapse, expanded, 30);
         Place(settingsButton, true, 30);
         if (HumanControl) right -= U(8);
         Place(returnToAgent, HumanControl, expanded ? 138 : 115);
+        if (portraitHeader && HumanControl) returnToAgent.SetBounds(U(8), U(42), Math.Max(1, ClientSize.Width - U(16)), U(32));
+        title.Visible = ClientSize.Width >= U(268);
+        status.Visible = !portraitHeader;
         title.SetBounds(U(12), 0, U(108), header.Height);
         int statusStart = expanded && !HumanControl ? U(388) : U(122);
         status.SetBounds(statusStart, 0, Math.Max(0, right - statusStart - U(8)), header.Height);
-        bool compactActions = !expanded && ClientSize.Width < U(268);
+        bool compactActions = ClientSize.Width < U(268);
         actions.FlowDirection = compactActions ? FlowDirection.TopDown : FlowDirection.LeftToRight;
-        actions.Padding = expanded ? new Padding(U(8), U(3), U(8), U(3)) : new Padding(U(8));
-        actions.SetBounds(expanded ? U(128) : U(12), expanded ? 1 : ClientSize.Height - U(60),
-            Math.Max(1, Math.Min(U(244), ClientSize.Width - U(24))), U(expanded ? 38 : compactActions ? 86 : 48));
-        if (compactActions) actions.Top = ClientSize.Height - actions.Height - U(12);
+        actions.Padding = expanded && !portraitHeader ? new Padding(U(8), U(3), U(8), U(3)) : new Padding(U(8));
+        actions.SetBounds(expanded && !portraitHeader ? U(128) : U(12), expanded ? (portraitHeader ? U(38) : 1) : ClientSize.Height - U(60),
+            Math.Max(1, Math.Min(U(244), ClientSize.Width - U(24))), U(compactActions ? 86 : expanded ? 38 : 48));
+        if (compactActions && !expanded) actions.Top = ClientSize.Height - actions.Height - U(12);
         take.Size = new Size(compactActions ? Math.Max(1, actions.Width - U(16)) : U(110), U(32));
         expand.Size = new Size(compactActions ? Math.Max(1, actions.Width - U(16)) : U(112), U(32));
         take.Margin = compactActions ? new Padding(0, 0, 0, U(6)) : new Padding(0, 0, U(6), 0);
@@ -294,7 +300,7 @@ internal sealed class RdpWindow : Form
         {
             expanded = true; restoredBounds = null; TopMost = true; ShowInTaskbar = true;
             var area = Screen.FromControl(this).WorkingArea;
-            Bounds = ViewerGeometry.Fit(desktopSize, area, 38 * DeviceDpi / 96, 5d / 6);
+            Bounds = ViewerGeometry.Fit(desktopSize, area, ExpandedHeaderUnits * DeviceDpi / 96, 5d / 6);
             LayoutChrome(); actions.Visible = !HumanControl;
             Native.EnableWindow(Rdp.Handle, HumanControl); Rdp.Enabled = HumanControl; Rdp.TabStop = HumanControl;
             if (ViewerVisible) Native.ShowWindow(Handle, 5);
@@ -320,7 +326,8 @@ internal sealed class RdpWindow : Form
             expanded = false; pipHeaderRevealed = false; restoredBounds = null; WindowState = FormWindowState.Normal; TopMost = true; ShowInTaskbar = true;
             var area = Screen.FromPoint(preferences.Position ?? Cursor.Position).WorkingArea;
             var size = preferences.Size ?? new Size(416, 236);
-            size = ViewerGeometry.Resize(new Rectangle(Point.Empty, size), desktopSize, 0, 2, area.Size).Size;
+            size = ViewerGeometry.Resize(new Rectangle(Point.Empty, size), desktopSize, 0, 2, area.Size,
+                358 * DeviceDpi / 96, 84 * DeviceDpi / 96).Size;
             var point = preferences.Position ?? new Point(area.Right - size.Width - 24, area.Bottom - size.Height - 24);
             Bounds = new Rectangle(Math.Clamp(point.X, area.Left, Math.Max(area.Left, area.Right - size.Width)),
                 Math.Clamp(point.Y, area.Top, Math.Max(area.Top, area.Bottom - size.Height)), size.Width, size.Height);

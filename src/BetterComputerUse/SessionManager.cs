@@ -58,7 +58,7 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
         {
             if (viewer is not null && !connectionLost && worker is { IsAlive: true } && state == "ready")
             {
-                if (show) await Ui(() => viewer.SetViewer(true));
+                if (!humanControl) await Ui(() => viewer.SetViewer(show));
                 return new { state, binding!.SessionId, binding.Generation, workerPid = worker.WorkerPid,
                     helperPid = worker.HelperPid, mode = workerMode, helperElevated = workerMode == "admin", uacDeclined };
             }
@@ -79,6 +79,8 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
             if (existing is int existingId)
             {
                 Native.VerifyChildSession(existingId);
+                if (DesktopProfile.Load(existingId) is { } profile)
+                { width = profile.Width; height = profile.Height; }
                 using var settling = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                 settling.CancelAfter(TimeSpan.FromSeconds(10));
                 while (Native.SessionConnectionState(existingId) != 4)
@@ -118,6 +120,7 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
             Native.VerifyChildSession(child);
             if (existing is not null && existing != child) throw new InvalidOperationException("Child session changed during reconnect; refusing to route input.");
             binding = new Binding(child, Guid.NewGuid().ToString("N"));
+            new DesktopProfile(child, width, height).Save();
             state = "starting-worker";
             timeout.CancelAfter(TimeSpan.FromMinutes(3));
             worker = await StartSessionWorkerAsync(timeout.Token);
@@ -340,6 +343,7 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                 timeout.CancelAfter(TimeSpan.FromSeconds(30));
                 while (Native.ChildSession() == binding.SessionId) await Task.Delay(100, timeout.Token);
+                DesktopProfile.Clear();
             }
             if (viewer is not null) { await Ui(() => viewer.CloseHost(disconnect: !logoff)); viewer = null; }
             desktopLease?.Dispose(); desktopLease = null;
@@ -363,6 +367,7 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
                 throw new InvalidOperationException("This task manages a session. Use session_stop with logoff:true and its binding.");
             var result = await DisconnectedSessionRecovery.Windows().LogoffAsync(
                 args["sessionId"]?.GetValue<int>() ?? throw new ArgumentException("sessionId from session_status is required."), lifetime.Token);
+            DesktopProfile.Clear();
             binding = null; state = "stopped"; lastError = null; humanControl = false; connectionLost = false;
             return result;
         }
