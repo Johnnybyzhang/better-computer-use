@@ -13,20 +13,20 @@ internal sealed class ViewerSettings : Form
     {
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
         StartPosition = FormStartPosition.Manual; BackColor = Color.FromArgb(29, 34, 40);
-        ForeColor = Color.White; Font = new Font("Segoe UI", 9); ClientSize = new Size(310, 228);
-        Padding = new Padding(16); KeyPreview = true;
-        collapse.SetBounds(16, 12, 278, 40); Controls.Add(collapse);
+        ForeColor = Color.White; Font = new Font("Segoe UI", 9); ClientSize = new Size(350, 126);
+        Padding = new Padding(12); KeyPreview = true;
+        collapse.SetBounds(12, 8, 326, 36); Controls.Add(collapse);
         collapse.CheckedChanged += (_, _) => CollapseChanged?.Invoke(collapse.Checked);
-        Controls.Add(new Label { Text = "Resume automation", Bounds = new Rectangle(16, 66, 278, 24),
+        Controls.Add(new Label { Text = "Resume automation", Bounds = new Rectangle(12, 52, 326, 22),
             ForeColor = Color.FromArgb(181, 192, 202) });
-        int y = 94;
-        foreach (var (mode, label) in new[] { (ResumeMode.OnClose, "On close"),
-            (ResumeMode.OnClickOutside, "On close or click outside"), (ResumeMode.Manual, "Manually") })
+        int x = 12;
+        foreach (var (mode, label, width) in new[] { (ResumeMode.OnClose, "On close", 72),
+            (ResumeMode.OnClickOutside, "On close or click outside", 166), (ResumeMode.Manual, "Manually", 76) })
         {
             var button = new ViewerActionButton { Text = label, AccessibleName = label,
-                ForeColor = Color.White, Bounds = new Rectangle(16, y, 278, 36), Cursor = Cursors.Hand };
+                ForeColor = Color.White, Bounds = new Rectangle(x, 78, width, 34), Cursor = Cursors.Hand };
             button.Click += (_, _) => { SelectMode(mode); ResumeChanged?.Invoke(mode); };
-            choices.Add((mode, button)); Controls.Add(button); y += 40;
+            choices.Add((mode, button)); Controls.Add(button); x += width + 6;
         }
         Deactivate += (_, _) => Hide();
         KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) { Hide(); e.Handled = true; } };
