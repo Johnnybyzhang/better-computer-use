@@ -37,18 +37,18 @@ internal static class DesktopHost
             await Wire.ReadAsync(pipe, handshakeTimeout.Token);
             using var peer = Native.VerifyClient(pipe, Native.CurrentSession, DateTime.MinValue);
             if (Native.IsProcessElevated(peer.Id)) throw new UnauthorizedAccessException("Desktop clients must be unelevated.");
-            await Wire.WriteAsync(pipe, new { connected = true, clientId = client, adminToolsAvailable = managerAdmin() }, handshakeTimeout.Token);
+            await Wire.WriteAsync(pipe, new { connected = true, clientId = client, adminToolsAvailable = managerAdmin(), elevatedComputerAvailable = service.ElevatedComputerAvailable }, handshakeTimeout.Token);
             while (true)
             {
                 var request = await Wire.ReadAsync(pipe, default);
                 try
                 {
                     var result = await service.CallAsync(client, request.RequiredString("name"), request["arguments"] as JsonObject ?? new());
-                    await Wire.WriteAsync(pipe, new { result, adminToolsAvailable = managerAdmin() }, default);
+                    await Wire.WriteAsync(pipe, new { result, adminToolsAvailable = managerAdmin(), elevatedComputerAvailable = service.ElevatedComputerAvailable }, default);
                 }
                 catch (Exception ex)
                 {
-                    await Wire.WriteAsync(pipe, new { error = ex.GetBaseException().Message, adminToolsAvailable = managerAdmin() }, default);
+                    await Wire.WriteAsync(pipe, new { error = ex.GetBaseException().Message, adminToolsAvailable = managerAdmin(), elevatedComputerAvailable = service.ElevatedComputerAvailable }, default);
                 }
             }
         }
@@ -64,6 +64,7 @@ internal sealed class DesktopClient(string[] hostArguments) : IDisposable
 {
     private NamedPipeClientStream? pipe;
     internal bool AdminToolsAvailable { get; private set; } = true;
+    internal bool ElevatedComputerAvailable { get; private set; }
 
     internal async Task RefreshCapabilitiesAsync() => await CallAsync("session_status", new());
 
@@ -92,6 +93,7 @@ internal sealed class DesktopClient(string[] hostArguments) : IDisposable
             await Wire.WriteAsync(next, new { hello = true }, timeout.Token);
             var hello = await Wire.ReadAsync(next, timeout.Token);
             AdminToolsAvailable = hello["adminToolsAvailable"]?.GetValue<bool>() ?? false;
+            ElevatedComputerAvailable = hello["elevatedComputerAvailable"]?.GetValue<bool>() ?? false;
             pipe = next;
         }
         catch { next.Dispose(); throw; }
@@ -116,6 +118,7 @@ internal sealed class DesktopClient(string[] hostArguments) : IDisposable
             throw new IOException("Desktop connection lost. Call session_start to reconnect. The previous operation was not replayed; inspect its outcome before continuing.");
         }
         AdminToolsAvailable = response["adminToolsAvailable"]?.GetValue<bool>() ?? false;
+        ElevatedComputerAvailable = response["elevatedComputerAvailable"]?.GetValue<bool>() ?? false;
         if (response["error"] is JsonValue error) throw new InvalidOperationException(error.GetValue<string>());
         return response["result"]?.DeepClone() ?? new JsonObject();
     }
@@ -149,6 +152,10 @@ internal sealed class DesktopControl
             throw new InvalidOperationException("Control moved to another agent. Call session_take_control to take over, then use the returned binding.");
     }
     internal void Detach(string client) { clients.Remove(client); if (Controller == client) Controller = null; }
+    internal void ValidateLogoff(string client, JsonObject args)
+    {
+        if (clients.Count > 0) Validate(client, args, input: true);
+    }
     internal void Reset() { clients.Clear(); Controller = null; }
 }
 
@@ -157,6 +164,7 @@ internal sealed class SharedDesktop(SessionManager manager)
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly DesktopControl control = new();
     internal bool AdminToolsAvailable => manager.AdminToolsAvailable;
+    internal bool ElevatedComputerAvailable => manager.ElevatedComputerAvailable;
     private string? workerGeneration;
 
     internal async Task DetachAsync(string client)
@@ -180,14 +188,21 @@ internal sealed class SharedDesktop(SessionManager manager)
             {
                 var started = Node(await manager.StartAsync(args["width"]?.GetValue<int>() ?? 1920,
                     args["height"]?.GetValue<int>() ?? 1080, args["showViewer"]?.GetValue<bool>() ?? true,
-                    args["enableChildSessions"]?.GetValue<bool>() ?? false, args["mode"]?.GetValue<string>() ?? "admin"));
+                    args["enableChildSessions"]?.GetValue<bool>() ?? false, args["mode"]?.GetValue<string>() ??
+                    (name == "session_take_control" ? (status["mode"]?.GetValue<string>() == "admin" ? "admin" : "user") : "admin")));
                 var generation = started["generation"]!.GetValue<string>();
                 if (workerGeneration != generation) { control.Reset(); workerGeneration = generation; }
                 control.Attach(client, started["sessionId"]!.GetValue<int>(), name == "session_take_control" || (args["takeControl"]?.GetValue<bool>() ?? true));
                 await manager.SetAgentConnectedAsync(control.Controller is not null);
                 return Describe(started);
             }
-            if (name == "session_logoff") return Node(await manager.LogoffDisconnectedAsync(args));
+            if (name == "session_logoff")
+            {
+                control.ValidateLogoff(client, args);
+                var logoffResult = Node(await manager.LogoffDisconnectedAsync(args));
+                control.Reset(); workerGeneration = null;
+                return logoffResult;
+            }
             var readOnly = name is "list_apps" or "list_windows" or "get_window" or "get_window_state" ||
                 name == "computer_use" && args["method"]?.GetValue<string>() is "list_apps" or "list_windows" or "get_window" or "get_window_state";
             if (name == "session_stop" && args["logoff"]?.GetValue<bool>() != true)

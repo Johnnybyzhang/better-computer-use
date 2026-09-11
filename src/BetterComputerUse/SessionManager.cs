@@ -16,6 +16,7 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
     private bool agentConnected;
     private int desktopWidth = 1920, desktopHeight = 1080;
     internal bool AdminToolsAvailable => workerMode != "user";
+    internal bool ElevatedComputerAvailable => allowElevation && AdminToolsAvailable;
     private volatile bool humanControl;
     private volatile bool connectionLost;
     private long controlRevision;

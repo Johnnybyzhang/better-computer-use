@@ -29,7 +29,7 @@ internal sealed class McpServer(DesktopClient manager, bool allowElevation)
             }
             try
             {
-                var adminToolsBefore = manager.AdminToolsAvailable;
+                var adminToolsBefore = (manager.AdminToolsAvailable, manager.ElevatedComputerAvailable);
                 object result;
                 var args = request["params"] as JsonObject ?? new JsonObject();
                 if (method == "initialize")
@@ -74,7 +74,7 @@ internal sealed class McpServer(DesktopClient manager, bool allowElevation)
                 }
                 else { await WriteError(id, -32601, "Method not found"); continue; }
                 await output.WriteLineAsync(JsonSerializer.Serialize(new { jsonrpc = "2.0", id, result }, Wire.Json));
-                if (adminToolsBefore != manager.AdminToolsAvailable)
+                if (adminToolsBefore != (manager.AdminToolsAvailable, manager.ElevatedComputerAvailable))
                     await output.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}");
             }
             catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or JsonException)
@@ -115,16 +115,16 @@ internal sealed class McpServer(DesktopClient manager, bool allowElevation)
         var result = new List<JsonObject> {
             Tool("session_status", "Inspect manager state, Windows session IDs, worker/helper PIDs and executable hash.", Schema(new JsonObject())),
             Tool("session_start", "Create, attach to, or resume the shared child desktop. Defaults to PiP and transfers agent control; takeControl:false attaches for observation. Returns this client's binding. Existing applications stay open.", Schema(start)),
-            Tool("session_take_control", "Transfer agent control to this client without closing applications. Human control remains paused until locally released. Returns a fresh binding; never override physical Escape interruption.", Schema(new JsonObject())),
+            Tool("session_take_control", "Transfer agent control to this client without closing applications. Human control remains paused until locally released. Returns a fresh binding. After host loss, recovery defaults to user mode to avoid unexpected UAC; set mode:admin explicitly if needed. Never override physical Escape interruption.", Schema(new JsonObject { ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("admin", "user") } })),
             Tool("session_restart_worker", "Explicitly restart a failed worker without logging off applications. Returns a new generation; do not use to override a person's Escape interruption.", Schema(Bound(), "sessionId", "generation")),
             Tool("session_viewer", "Show or hide the floating RDP viewer. Human control is granted only by the local Take over button.", Schema(view, "sessionId", "generation")),
             Tool("session_stop", "Detach this agent while leaving the shared desktop running; logoff:true explicitly closes its applications.", Schema(stop, "sessionId", "generation")),
-            Tool("session_logoff", "Recover before creating a fresh desktop: log off an existing disconnected child session only when no task owns its lock. Closes its applications and unsaved work. Use sessionId from session_status.existingChildSession, then session_start. No extra approval prompt is needed when replacing the abandoned desktop is within the user's task. Refuses connected, busy, changed or parent sessions.", Schema(new JsonObject { ["sessionId"] = Type("integer") }, "sessionId")),
+            Tool("session_logoff", "Recover before creating a fresh desktop: log off an existing disconnected child session only when no task owns its lock. Closes its applications and unsaved work. Use sessionId from session_status.existingChildSession; if agents remain attached, only the controller with its current generation can log off. Refuses connected, busy, changed or parent sessions.", Schema(Bound(), "sessionId")),
             Tool("computer_use", "Call the installed Computer Use executable inside the bound child session. Paused during human control; never targets the parent desktop.", Schema(computer, "sessionId", "generation", "method")) };
         result.AddRange(ComputerMethods.Allowed.Select(NativeToolCatalog.Tool));
         if (manager.AdminToolsAvailable) result.Add(Tool("launch_process_as_admin", "Launch a specified .exe as administrator inside the owned child session. Windows UAC in the main session is the only approval prompt; returns verified PID/session/elevation. No automatic retries. The launched application stays open.",
             Schema(process, "sessionId", "generation", "executablePath")));
-        if (allowElevation && manager.AdminToolsAvailable) result.Add(Tool("computer_use_elevated", "One elevated Computer Use request, with only Windows UAC in the main session. Same session binding and parameters as computer_use.",
+        if (allowElevation && manager.ElevatedComputerAvailable) result.Add(Tool("computer_use_elevated", "One elevated Computer Use request, with only Windows UAC in the main session. Same session binding and parameters as computer_use.",
             Schema((JsonObject)computer.DeepClone(), "sessionId", "generation", "method")));
         return result.ToArray();
     }

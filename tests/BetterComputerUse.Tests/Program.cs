@@ -472,6 +472,20 @@ await Test("agent handoff invalidates old input and supports taking control back
     control.Validate("a", Args(nextA), true);
     await Throws<InvalidOperationException>(() => Sync(() => control.Validate("b", Args(b), true)));
 });
+await Test("disconnected logoff requires current controller while agents remain attached", async () =>
+{
+    var control = new DesktopControl();
+    JsonObject Args(Binding b) => new() { ["sessionId"] = b.SessionId, ["generation"] = b.Generation };
+    control.ValidateLogoff("unattached", new() { ["sessionId"] = 42 });
+    var a = control.Attach("a", 42, true);
+    var observer = control.Attach("b", 42, false);
+    await Throws<InvalidOperationException>(() => Sync(() => control.ValidateLogoff("unattached", Args(a))));
+    await Throws<InvalidOperationException>(() => Sync(() => control.ValidateLogoff("b", Args(observer))));
+    control.ValidateLogoff("a", Args(a));
+    var b = control.Attach("b", 42, true);
+    await Throws<InvalidOperationException>(() => Sync(() => control.ValidateLogoff("a", Args(a))));
+    control.ValidateLogoff("b", Args(b));
+});
 await Test("detaching another agent preserves controller; reset rejects every old binding", async () =>
 {
     var control = new DesktopControl(); var a = control.Attach("a", 42, true);
