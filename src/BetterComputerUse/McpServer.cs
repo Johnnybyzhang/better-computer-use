@@ -44,7 +44,11 @@ internal sealed class McpServer(DesktopClient manager, bool allowElevation)
                 }
                 else if (method == "ping") result = new { };
                 else if (!ready) { await WriteError(id, -32002, "Initialize and send notifications/initialized first"); continue; }
-                else if (method == "tools/list") result = new { tools = Tools() };
+                else if (method == "tools/list")
+                {
+                    await manager.RefreshCapabilitiesAsync();
+                    result = new { tools = Tools() };
+                }
                 else if (method == "tools/call")
                 {
                     var name = args.RequiredString("name");
@@ -75,6 +79,8 @@ internal sealed class McpServer(DesktopClient manager, bool allowElevation)
             }
             catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or JsonException)
             { await WriteError(id, -32602, ex.Message); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            { await WriteError(id, -32603, ex.Message); }
         }
 
         Task WriteError(JsonNode? id, int code, string message) => output.WriteLineAsync(JsonSerializer.Serialize(new

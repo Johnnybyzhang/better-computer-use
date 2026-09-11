@@ -61,7 +61,7 @@ internal sealed class RdpWindow : Form
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
         ClientSize = new Size(384, 256);
-        MinimumSize = new Size(360, 200);
+        MinimumSize = new Size(1, 1); // Aspect-aware sizing applies the minimum on one shared scale.
         Location = new Point(-20000, -20000);
         ShowInTaskbar = false;
         surface.Controls.Add(Rdp);
@@ -314,8 +314,7 @@ internal sealed class RdpWindow : Form
             expanded = false; pipHeaderRevealed = false; restoredBounds = null; WindowState = FormWindowState.Normal; TopMost = true; ShowInTaskbar = true;
             var area = Screen.FromPoint(preferences.Position ?? Cursor.Position).WorkingArea;
             var size = preferences.Size ?? new Size(416, 236);
-            size.Height = (int)Math.Round((size.Width - 2d) * desktopSize.Height / desktopSize.Width) + 2;
-            size = new Size(Math.Clamp(size.Width, 360, Math.Max(360, area.Width)), Math.Clamp(size.Height, 200, Math.Max(200, area.Height)));
+            size = ViewerGeometry.Resize(new Rectangle(Point.Empty, size), desktopSize, 0, 2, area.Size).Size;
             var point = preferences.Position ?? new Point(area.Right - size.Width - 24, area.Bottom - size.Height - 24);
             Bounds = new Rectangle(Math.Clamp(point.X, area.Left, Math.Max(area.Left, area.Right - size.Width)),
                 Math.Clamp(point.Y, area.Top, Math.Max(area.Top, area.Bottom - size.Height)), size.Width, size.Height);

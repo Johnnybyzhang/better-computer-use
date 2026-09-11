@@ -131,7 +131,15 @@ internal sealed class ConnectionDot : Control
     internal ConnectionDot()
     {
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint, true);
-        AccessibleName = "Connection status"; Cursor = Cursors.Hand;
+        AccessibleName = "Show or hide viewer controls"; AccessibleRole = AccessibleRole.PushButton;
+        Cursor = Cursors.Hand; TabStop = true;
+        SetStyle(ControlStyles.Selectable, true);
+    }
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode is Keys.Enter or Keys.Space)
+        { OnClick(EventArgs.Empty); e.Handled = true; e.SuppressKeyPress = true; }
+        base.OnKeyDown(e);
     }
     protected override CreateParams CreateParams
     {

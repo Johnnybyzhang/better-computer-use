@@ -8,6 +8,7 @@ internal sealed class ViewerSettings : Form
     private readonly List<(ResumeMode Mode, ViewerActionButton Button)> choices = [];
     internal Action<bool>? CollapseChanged;
     internal Action<ResumeMode>? ResumeChanged;
+    private Control? toggleAnchor;
 
     internal ViewerSettings()
     {
@@ -28,7 +29,13 @@ internal sealed class ViewerSettings : Form
             button.Click += (_, _) => { SelectMode(mode); ResumeChanged?.Invoke(mode); };
             choices.Add((mode, button)); Controls.Add(button); x += width + 6;
         }
-        Deactivate += (_, _) => Hide();
+        Deactivate += (_, _) =>
+        {
+            // Keep visibility until the owner's button handles the same click.
+            if (toggleAnchor is { IsDisposed: false } anchor &&
+                anchor.RectangleToScreen(anchor.ClientRectangle).Contains(Cursor.Position)) return;
+            Hide();
+        };
         KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) { Hide(); e.Handled = true; } };
     }
     protected override CreateParams CreateParams
@@ -50,6 +57,7 @@ internal sealed class ViewerSettings : Form
     }
     internal void Toggle(Control anchor, bool autoCollapse, ResumeMode mode)
     {
+        toggleAnchor = anchor;
         if (Visible) { Hide(); return; }
         collapse.Checked = autoCollapse; SelectMode(mode);
         var point = anchor.PointToScreen(new Point(anchor.Width, anchor.Height + 6));

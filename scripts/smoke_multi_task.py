@@ -70,6 +70,14 @@ def main():
             statuses = list(pool.map(lambda client: client.call("session_status"), clients))
         assert len({s["hostPid"] for s in statuses}) == 1
         print("PASS three independent MCP clients share one authenticated desktop host", flush=True)
+        if statuses[0].get("state") == "ready" and statuses[0].get("mode") == "user":
+            fresh = Client(options.exe)
+            try:
+                advertised = {tool["name"] for tool in fresh.send("tools/list")["tools"]}
+                assert "launch_process_as_admin" not in advertised and "computer_use_elevated" not in advertised
+                print("PASS fresh client discovery reflects the existing user-mode host", flush=True)
+            finally:
+                fresh.close()
         if not options.live:
             return
         started = a.call("session_start", {"mode": options.mode})

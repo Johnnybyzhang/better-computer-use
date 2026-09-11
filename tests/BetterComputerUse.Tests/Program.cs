@@ -391,6 +391,27 @@ await Test("viewer geometry fits the desktop without grey padding or stretching"
         Assert(Math.Abs((resized.Width - 2d) / (resized.Height - 40d) - 16d / 9) < .002);
     }
 }));
+await Test("View PiP preserves wide and portrait desktop aspect ratios", () => Sta(() =>
+{
+    foreach (var desktop in new[] { new System.Drawing.Size(1920, 480), new System.Drawing.Size(640, 4096) })
+    {
+        using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }, desktop);
+        viewer.Show(); viewer.SetViewer(true);
+        double scaleX = (viewer.ClientSize.Width - 2d) / desktop.Width;
+        double scaleY = (viewer.ClientSize.Height - 2d) / desktop.Height;
+        Assert(Math.Abs(scaleX - scaleY) < .002);
+        viewer.CloseHost();
+    }
+}));
+await Test("View connection control supports keyboard activation", () => Sta(() =>
+{
+    using var dot = new ConnectionDot();
+    int clicks = 0; dot.Click += (_, _) => clicks++;
+    var keyDown = typeof(ConnectionDot).GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    keyDown.Invoke(dot, [new System.Windows.Forms.KeyEventArgs(System.Windows.Forms.Keys.Space)]);
+    keyDown.Invoke(dot, [new System.Windows.Forms.KeyEventArgs(System.Windows.Forms.Keys.Enter)]);
+    Assert(dot.TabStop && clicks == 2 && dot.AccessibleRole == System.Windows.Forms.AccessibleRole.PushButton);
+}));
 await Test("View hidden PiP leaves no taskbar ghost and restores as an app window", () => Sta(() =>
 {
     using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);

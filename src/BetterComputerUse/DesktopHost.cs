@@ -37,7 +37,7 @@ internal static class DesktopHost
             await Wire.ReadAsync(pipe, handshakeTimeout.Token);
             using var peer = Native.VerifyClient(pipe, Native.CurrentSession, DateTime.MinValue);
             if (Native.IsProcessElevated(peer.Id)) throw new UnauthorizedAccessException("Desktop clients must be unelevated.");
-            await Wire.WriteAsync(pipe, new { connected = true, clientId = client }, handshakeTimeout.Token);
+            await Wire.WriteAsync(pipe, new { connected = true, clientId = client, adminToolsAvailable = managerAdmin() }, handshakeTimeout.Token);
             while (true)
             {
                 var request = await Wire.ReadAsync(pipe, default);
@@ -65,6 +65,8 @@ internal sealed class DesktopClient(string[] hostArguments) : IDisposable
     private NamedPipeClientStream? pipe;
     internal bool AdminToolsAvailable { get; private set; } = true;
 
+    internal async Task RefreshCapabilitiesAsync() => await CallAsync("session_status", new());
+
     private async Task ConnectAsync()
     {
         if (pipe is not null) return;
@@ -88,7 +90,8 @@ internal sealed class DesktopClient(string[] hostArguments) : IDisposable
             if (Native.IsProcessElevated(checked((int)pid))) throw new UnauthorizedAccessException("Desktop host must be unelevated.");
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await Wire.WriteAsync(next, new { hello = true }, timeout.Token);
-            await Wire.ReadAsync(next, timeout.Token);
+            var hello = await Wire.ReadAsync(next, timeout.Token);
+            AdminToolsAvailable = hello["adminToolsAvailable"]?.GetValue<bool>() ?? false;
             pipe = next;
         }
         catch { next.Dispose(); throw; }
