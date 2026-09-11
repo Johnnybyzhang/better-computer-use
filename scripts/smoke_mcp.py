@@ -70,9 +70,11 @@ try:
     assert send("tools/call", {"name": "unknown"})["error"]["code"] == -32602
     assert call("computer_use", {"sessionId": 999, "generation": "bad", "method": "list_windows"})["isError"]
     assert call("list_windows", {"sessionId": 999, "generation": "bad"})["isError"]
-    assert call("launch_process_as_admin", {"sessionId": 999, "generation": "bad", "executablePath": "C:\\invalid.exe"})["isError"]
+    admin_probe = send("tools/call", {"name": "launch_process_as_admin", "arguments": {"sessionId": 999, "generation": "bad", "executablePath": "C:\\invalid.exe"}})
+    assert admin_probe.get("error", {}).get("code") == -32602 or admin_probe.get("result", {}).get("isError"), admin_probe
     status = payload(call("session_status"))
-    assert status["state"] == "stopped", status
+    assert status["state"] in ("stopped", "ready", "faulted"), status
+    assert status["generation"] is None, "A newly connected client must attach before receiving a binding"
     print("PASS MCP handshake, tool discovery, unavailable-session rejection, elevation hidden")
     assert call("session_logoff", {"sessionId": status["parentSessionId"]})["isError"]
     if options.recover_existing:
@@ -83,6 +85,7 @@ try:
         print("PASS disconnected child recovery logged off session", old["sessionId"], flush=True)
     if options.live:
         assert options.helper or options.auto_helper or "--auto-helper" in command, "--live requires --helper or --auto-helper"
+        assert payload(call("session_status"))["existingChildSession"]["sessionId"] is None, "This destructive lifecycle smoke test requires a fresh disposable desktop; use smoke_multi_task.py to test an existing desktop safely."
         started = payload(call("session_start", {"showViewer": False, "mode": options.mode}))
         binding = {key: started[key] for key in ("sessionId", "generation")}
         assert started["sessionId"] != status["parentSessionId"]
@@ -90,8 +93,9 @@ try:
         assert started["mode"] == options.mode and started["helperElevated"] == (options.mode == "admin")
         active_names = {t["name"] for t in send("tools/list")["result"]["tools"]}
         assert ("launch_process_as_admin" in active_names) == (options.mode == "admin")
-        assert call("session_start")["isError"]
-        assert payload(call("session_status"))["state"] == "ready", "Duplicate start must not tear down the owned desktop"
+        again = payload(call("session_start"))
+        assert again["sessionId"] == started["sessionId"] and again["workerPid"] == started["workerPid"]
+        assert payload(call("session_status"))["state"] == "ready", "Repeated attach must keep the shared desktop alive"
         assert call("computer_use", {**binding, "generation": "stale", "method": "list_windows"})["isError"]
         result = payload(call("computer_use", {**binding, "method": "list_windows"}))
         assert result["ok"] and isinstance(result["result"], list), result

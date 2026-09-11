@@ -28,6 +28,22 @@ internal static class Native
         try { return bytes >= 4 ? Marshal.ReadInt32(buffer) : throw new InvalidDataException("Windows returned no session connection state."); }
         finally { WTSFreeMemory(buffer); }
     }
+    internal static void VerifyChildSession(int session)
+    {
+        if (session <= 0 || session == CurrentSession || ChildSession() != session)
+            throw new UnauthorizedAccessException("The desktop is not this parent session's current child.");
+        string Query(int kind)
+        {
+            Check(WTSQuerySessionInformationW(0, session, kind, out var buffer, out _));
+            try { return Marshal.PtrToStringUni(buffer) ?? ""; }
+            finally { WTSFreeMemory(buffer); }
+        }
+        var user = Query(5); var domain = Query(7);
+        var account = new NTAccount(domain, user);
+        if (account.Translate(typeof(SecurityIdentifier)).Value != UserSid)
+            throw new UnauthorizedAccessException("Child desktop belongs to a different user.");
+    }
+
     [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint pid);
     [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
@@ -50,6 +66,16 @@ internal static class Native
     private static extern bool OpenProcessToken(SafeProcessHandle process, uint access, out SafeAccessTokenHandle token);
     [DllImport("advapi32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetTokenInformation(SafeAccessTokenHandle token, int kind, out int value, int length, out int returned);
+
+    [DllImport("kernel32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool FreeConsole();
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] internal static extern int WindowStyle(nint window, int index);
+    [DllImport("dwmapi.dll")] internal static extern int DwmSetWindowAttribute(nint window, int attribute, ref int value, int size);
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool ShowWindow(nint window, int command);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint SendMessage(nint window, uint message, nint wParam, nint lParam);
+    [DllImport("user32.dll")] internal static extern short GetAsyncKeyState(int key);
+    [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint window, out uint pid);
 
     internal static int CurrentSession => Process.GetCurrentProcess().SessionId;
     internal static string UserSid { get { using var id = WindowsIdentity.GetCurrent(); return id.User!.Value; } }

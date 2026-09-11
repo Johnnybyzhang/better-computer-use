@@ -4,5 +4,7 @@
     <Version>0.1.5</Version>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/app.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup><EmbeddedResource Include="Assets/app.ico" LogicalName="BetterComputerUse.app.ico" /></ItemGroup>
 </Project>

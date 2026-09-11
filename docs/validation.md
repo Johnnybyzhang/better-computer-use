@@ -1,6 +1,78 @@
 # Validation and known limitations
 
-## Checked locally
+## Connected-desktop follow-up
+
+The Windows parent desktop was subsequently connected and the following checks ran:
+
+- The bundled outer Computer Use runtime activated/captured a real parent window,
+  then discovered and captured the redesigned viewer. Real injected clicks revealed
+  the PiP controls and expanded the viewer; a fresh capture showed the button change
+  from Expand view to Collapse and the live child-desktop pixels.
+- The inner helper discovered a dedicated child-session GUI, typed a known string,
+  and returned that exact string in a fresh UI Automation document-text read.
+- A second client attached as an observer, queried the inner session, was refused
+  controller-only work, and detached without transferring the first client's control.
+- After the final review fixes, the isolated build passed 47 noninteractive tests.
+  The full suite ran inside the child desktop: 71 tests passed with no checks skipped.
+  Geometry tests cover exact desktop aspect fitting and no upscaling beyond the RDP
+  desktop. Added UI regressions cover hover overlays, read-only click-out, and hidden
+  window styles/taskbar restoration, non-overlapping expanded chrome, control-button
+  toggling, retained human-control labeling and independent auto-collapse/resume settings.
+  Review regressions also cover extreme-aspect control containment, stale viewer
+  callbacks, queued takeover cancellation, bound logoff and persisted desktop dimensions.
+
+The user took over outer testing after canceling the outer Computer Use run. No further
+outer automation was attempted. User feedback drove borderless PiP, a soft alpha-blended
+connection dot, a hover title bar, two rounded action buttons, an Expand/Collapse toggle,
+retained topmost behavior, aspect fitting, taskbar ghost removal and a dedicated tray/app
+icon. The new development build was opened for manual validation with the existing child
+desktop preserved. No screenshot-tool-specific click-out exception is implemented.
+
+Physical screenshot-tool interactions, tray/taskbar behavior, multi-monitor/DPI and
+manual UAC testing remain subject to the user's connected-desktop walkthrough.
+
+## Original shared desktop and PiP run (2026-09-11, before review follow-ups)
+
+Checked locally on Windows x64 before pushing the PR:
+
+- 59 tests passed with no interactive checks skipped: existing identity/IPC/elevation
+  checks plus two-click takeover, native RDP input disabling, manual/automatic return,
+  click-out decision logic, minimize-to-PiP, pending takeover cancellation and agent
+  binding invalidation.
+- The CI-mode build passed 44 tests, explicitly skipping 15 interactive/unelevated
+  checks, and published the local application output with no compiler warnings.
+- `python scripts/smoke_multi_task.py --live --mode user`: three independent MCP
+  processes shared a host, attached as observer/controller, handed control A/B/A,
+  rejected stale input, exited, and reattached to the same session and worker.
+- `python scripts/smoke_viewer.py`: exercised the actual host window's click handlers
+  and checked native visibility through PiP/large transitions, input pause, selecting
+  another agent during human control, collapse-to-resume and read-only expansion.
+  These are synthetic window messages, not physical mouse tests.
+- `python scripts/smoke_preservation.py --crash-host`: a child-bound test GUI kept
+  unsaved TextBox content and the same PID through agent handoff, all-client exit,
+  host termination and RDP reconnection. Fresh samples after recovery matched the
+  in-memory document. It also verified that an existing MCP client reconnects a
+  broken host pipe with one session_start. The test closes only its own GUI, not
+  the existing desktop.
+- `python scripts/smoke_mcp.py`: stdio protocol, discovery and invalid-binding checks.
+
+The outer Windows session was disconnected. Physical mouse/focus behavior, secure
+UAC desktop transitions, multi-monitor/DPI behavior and live remote-pixel rendering
+still need an active-desktop walkthrough. PrintWindow verified window chrome but
+cannot establish DirectX RDP preview rendering in that environment. Live shared-host
+checks used explicit user mode; admin/UAC mode selection was covered by the automated
+suite, not a fresh manual UAC interaction in this revision. A native Git CMD launch
+reported no targetable window despite starting child-session processes; it was not
+retried. The preservation test used a dedicated child-bound test GUI instead of
+claiming that native app discovery/launch had passed.
+
+For normal testing on an existing desktop, use the shared-host scripts above.
+`smoke_preservation.py --crash-host` deliberately terminates this build's shared host;
+run it only with other test clients disconnected. The original `smoke_mcp.py --live`
+is destructive lifecycle validation and refuses an existing desktop unless its
+explicit recovery option is used.
+
+## Earlier release validation
 
 - 51 automated checks cover protocol framing, binding validation, helper transport,
   request-level authorization, process identity, suspended launch, desktop locking,
@@ -43,8 +115,8 @@ must be checked together on a real Windows on ARM installation.
 - **Session stop cleanup:** a repeated-session stress test exposed an intermittent
   `session_stop` cleanup hang after Windows had logged off the desktop. This remains
   unresolved. Do not describe repeated teardown as fully validated.
-- **UI:** the viewer is functional but basic. Layout, DPI behavior, clearer connection
-  and control states, and general visual polish are deferred to a later version.
+- **UI:** PiP and shared handoff are implemented. Physical click-out, secure-desktop
+  interactions, multi-monitor/DPI transitions and interactive ARM64 need validation.
 - **Private protocol:** installed OpenAI runtime updates can change executable paths,
   native tool schemas or authorization behavior. Restart after runtime updates.
 - **Platform coverage:** Windows Home is excluded by default; macOS uses built-in
@@ -62,6 +134,6 @@ logoff/recovery. Do not close another task's desktop merely to make a test pass.
 
 `scripts/smoke_mcp.py --live --mode admin` or `--mode user` runs a live helper test.
 `--recover-existing` additionally authorizes closing the existing abandoned desktop;
-it is intentionally opt-in. `scripts/smoke_multi_task.py --live` stresses ownership
-and handoff. `scripts/smoke_app_server.py --codex <CLI>` verifies actual app-server
+it is intentionally opt-in. `scripts/smoke_multi_task.py --live` tests shared attachment
+and handoff without logging off the desktop. `scripts/smoke_app_server.py --codex <CLI>` verifies actual app-server
 plugin loading without model calls.

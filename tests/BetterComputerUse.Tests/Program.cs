@@ -3,6 +3,53 @@ using System.IO.Pipes;
 using System.Text.Json.Nodes;
 using BetterComputerUse;
 
+// Run UI regressions on the child desktop without stealing the user's parent desktop.
+if (args.FirstOrDefault() == "--launch-child-suite")
+{
+    var session = Native.ChildSession() ?? throw new Exception("Start the test desktop first.");
+    Native.VerifyChildSession(session);
+    Launcher.LaunchTask(["--child-suite", Path.GetFullPath(args[1])], new Binding(session, "test-suite"), false);
+    return;
+}
+if (args.FirstOrDefault() == "--child-suite")
+{
+    Native.FreeConsole();
+    var report = new StreamWriter(args[1], false, new System.Text.UTF8Encoding(false)) { AutoFlush = true };
+    Console.SetOut(report); Console.SetError(report);
+}
+
+// Opt-in process whose document exists in a TextBox, for live reconnect/crash tests.
+if (args.FirstOrDefault() == "--launch-desktop-document")
+{
+    var session = Native.ChildSession() ?? throw new Exception("Start the test desktop first.");
+    Native.VerifyChildSession(session);
+    Launcher.LaunchTask(["--desktop-document", Path.GetFullPath(args[1]), args[2]], new Binding(session, "probe"), false);
+    return;
+}
+if (args.FirstOrDefault() == "--desktop-document")
+{
+    Native.FreeConsole();
+    var thread = new Thread(() =>
+    {
+        using var form = new System.Windows.Forms.Form { Text = "BCU unsaved reconnect test", Width = 700, Height = 450 };
+        var editor = new System.Windows.Forms.TextBox { Multiline = true, Dock = System.Windows.Forms.DockStyle.Fill, Text = args[2] };
+        form.Controls.Add(editor);
+        using var timer = new System.Windows.Forms.Timer { Interval = 100 };
+        timer.Tick += (_, _) =>
+        {
+            if (File.Exists(args[1] + ".close")) { form.Close(); return; }
+            if (File.Exists(args[1] + ".query"))
+            {
+                File.Delete(args[1] + ".query");
+                File.WriteAllText(args[1], System.Text.Json.JsonSerializer.Serialize(new { pid = Environment.ProcessId,
+                    sessionId = Native.CurrentSession, text = editor.Text, sampledAt = DateTime.UtcNow }));
+            }
+        };
+        timer.Start(); System.Windows.Forms.Application.Run(form);
+    });
+    thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join(); return;
+}
+
 if (args.FirstOrDefault() == "elevation-broker") { await ElevationBroker.RunAsync(args); return; }
 if (args.FirstOrDefault() == "elevated-worker") { await Worker.RunAsync(args, true); return; }
 if (args.FirstOrDefault() == "--admin-child-probe")
@@ -233,7 +280,7 @@ await Test("desktop ownership is exclusive and released on dispose", () => Sync(
     {
         bool rejected = false;
         try { using var competing = DesktopLease.Acquire(path); }
-        catch (InvalidOperationException ex) { rejected = ex.Message.Contains("Another task owns"); }
+        catch (InvalidOperationException ex) { rejected = ex.Message.Contains("desktop host already holds"); }
         Assert(rejected);
     }
     using (var nextOwner = DesktopLease.Acquire(path)) { }
@@ -241,7 +288,7 @@ await Test("desktop ownership is exclusive and released on dispose", () => Sync(
 }));
 await Test("View disables native RDP input; Take control enables it; hide releases it", () => Sta(() =>
 {
-    using var viewer = new RdpWindow(); viewer.Show();
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show();
     viewer.SetHumanControl(false);
     Assert(!viewer.HumanControl && !Native.IsWindowEnabled(viewer.Rdp.Handle) && !viewer.Rdp.TabStop);
     viewer.SetHumanControl(true);
@@ -250,6 +297,245 @@ await Test("View disables native RDP input; Take control enables it; hide releas
     Assert(!viewer.HumanControl && !Native.IsWindowEnabled(viewer.Rdp.Handle));
     viewer.CloseHost();
 }));
+await Test("View PiP takes two explicit clicks and never enables input on reveal", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show();
+    viewer.SetHumanControl(false); viewer.SetViewer(true);
+    int requests = 0;
+    viewer.ControlRequested += requested => { if (requested) { requests++; viewer.SetHumanControl(true); } };
+    viewer.RequestTakeover(); Assert(requests == 0);
+    viewer.RevealControls();
+    Assert(viewer.ViewMode == "pip" && requests == 0 && !Native.IsWindowEnabled(viewer.Rdp.Handle));
+    viewer.RequestTakeover();
+    Assert(requests == 1 && viewer.ViewMode == "expanded" && Native.IsWindowEnabled(viewer.Rdp.Handle));
+    viewer.CloseHost();
+}));
+await Test("View collapse resumes by default and manual mode keeps input paused", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    int releases = 0; viewer.ControlRequested += requested => { if (!requested) releases++; else viewer.SetHumanControl(true); };
+    viewer.SetHumanControl(true); viewer.Collapse();
+    Assert(releases == 1 && !viewer.HumanControl && viewer.ViewMode == "pip" && !Native.IsWindowEnabled(viewer.Rdp.Handle));
+    viewer.ResumeMode = ResumeMode.Manual; viewer.SetHumanControl(true); viewer.Collapse();
+    Assert(releases == 1 && viewer.HumanControl && !Native.IsWindowEnabled(viewer.Rdp.Handle));
+    Assert(viewer.ControlButtonText == "Taken control" && !viewer.ControlButtonEnabled);
+    viewer.Expand();
+    Assert(viewer.HumanControl && viewer.ViewMode == "expanded" && Native.IsWindowEnabled(viewer.Rdp.Handle));
+    viewer.ReturnToAgent(); Assert(releases == 2 && !viewer.HumanControl && viewer.ControlButtonText == "Take over" && viewer.ControlButtonEnabled);
+    viewer.CloseHost();
+}));
+await Test("View collapsing cancels a pending takeover before input is granted", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    var requests = new List<bool>(); viewer.ControlRequested += requested => requests.Add(requested);
+    viewer.SetHumanControl(false); viewer.RevealControls(); viewer.RequestTakeover(); viewer.Collapse();
+    Assert(requests.SequenceEqual(new[] { true, false }) && !Native.IsWindowEnabled(viewer.Rdp.Handle));
+    viewer.CloseHost();
+}));
+await Test("View click-out preference ignores focus changes and owned dialogs", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    viewer.ResumeMode = ResumeMode.OnClickOutside; viewer.SetHumanControl(true);
+    int releases = 0; viewer.ControlRequested += requested => { if (!requested) releases++; };
+    viewer.ObservePointer(false, true, true); Assert(viewer.HumanControl);
+    viewer.ObservePointer(true, true, false); Assert(viewer.HumanControl); // menu or secure desktop
+    viewer.ObservePointer(false, true, true); viewer.ObservePointer(true, true, true);
+    Assert(!viewer.HumanControl && releases == 1 && viewer.ViewMode == "pip");
+    viewer.ResumeMode = ResumeMode.Manual; viewer.SetHumanControl(true);
+    viewer.ObservePointer(false, true, true); viewer.ObservePointer(true, true, true);
+    Assert(viewer.HumanControl && releases == 1);
+    viewer.ReturnToAgent(); viewer.CloseHost();
+}));
+await Test("View minimizing the large window collapses and resumes without minimizing RDP", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    viewer.SetHumanControl(true); Native.SendMessage(viewer.Handle, 0x112, 0xf020, 0);
+    Assert(!viewer.HumanControl && viewer.ViewMode == "pip" && viewer.WindowState == System.Windows.Forms.FormWindowState.Normal);
+    viewer.CloseHost();
+}));
+await Test("View read-only expansion does not request or enable human control", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show();
+    viewer.SetHumanControl(false); viewer.SetViewer(true);
+    viewer.ControlRequested += _ => throw new Exception("Unexpected control request");
+    viewer.Expand();
+    Assert(viewer.ViewMode == "expanded" && viewer.TopMost && !viewer.HumanControl && !Native.IsWindowEnabled(viewer.Rdp.Handle));
+    viewer.CloseHost();
+}));
+await Test("View hovering reveals PiP chrome without resizing the remote preview", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    var preview = viewer.Rdp.Bounds;
+    viewer.UpdateHover(viewer.PointToScreen(new System.Drawing.Point(40, 15)));
+    Assert(viewer.Rdp.Bounds == preview && viewer.ViewMode == "pip" && !viewer.HumanControl);
+    viewer.UpdateHover(new System.Drawing.Point(-10000, -10000));
+    Assert(viewer.Rdp.Bounds == preview);
+    viewer.CloseHost();
+}));
+await Test("View read-only expansion collapses on click-out without changing control", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    viewer.Expand(); viewer.ObservePointer(true, true, true);
+    Assert(viewer.ViewMode == "pip" && !viewer.HumanControl && viewer.TopMost);
+    viewer.CloseHost();
+}));
+await Test("viewer geometry fits the desktop without grey padding or stretching", () => Sync(() =>
+{
+    var desktop = new System.Drawing.Size(1920, 1080);
+    foreach (var area in new[] { new System.Drawing.Rectangle(0, 0, 2560, 1400), new System.Drawing.Rectangle(-1280, 0, 1280, 984) })
+    {
+        var fitted = ViewerGeometry.Fit(desktop, area, 38, 1);
+        Assert(area.Contains(fitted) && fitted.Width <= 1922 && fitted.Height <= 1120);
+        Assert(Math.Abs((fitted.Width - 2d) / (fitted.Height - 40d) - 16d / 9) < .002);
+        var resized = ViewerGeometry.Resize(fitted, desktop, 38, 3, area.Size);
+        Assert(Math.Abs((resized.Width - 2d) / (resized.Height - 40d) - 16d / 9) < .002);
+    }
+}));
+await Test("View PiP preserves wide and portrait desktop aspect ratios", () => Sta(() =>
+{
+    foreach (var desktop in new[] { new System.Drawing.Size(1920, 480), new System.Drawing.Size(4096, 480), new System.Drawing.Size(640, 4096) })
+    {
+        using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }, desktop);
+        viewer.Show(); viewer.SetViewer(true);
+        double scaleX = (viewer.ClientSize.Width - 2d) / desktop.Width;
+        double scaleY = (viewer.ClientSize.Height - 2d) / desktop.Height;
+        Assert(Math.Abs(scaleX - scaleY) < .002);
+        viewer.RevealControls();
+        var panel = viewer.Controls.OfType<System.Windows.Forms.FlowLayoutPanel>().Single();
+        foreach (System.Windows.Forms.Control button in panel.Controls)
+            Assert(panel.ClientRectangle.Contains(button.Bounds));
+        Assert(viewer.ClientRectangle.Contains(panel.Bounds));
+        viewer.Expand(); viewer.RevealControls();
+        foreach (System.Windows.Forms.Control button in panel.Controls)
+            Assert(panel.ClientRectangle.Contains(button.Bounds));
+        Assert(viewer.ClientRectangle.Contains(panel.Bounds));
+        viewer.CloseHost();
+    }
+}));
+await Test("desktop geometry profile survives manager recreation and rejects other sessions", () => Sync(() =>
+{
+    var path = Path.Combine(Path.GetTempPath(), "bcu-profile-" + Guid.NewGuid().ToString("N") + ".json");
+    try
+    {
+        new DesktopProfile(42, 640, 4096).Save(path);
+        Assert(DesktopProfile.Load(42, path) == new DesktopProfile(42, 640, 4096));
+        Assert(DesktopProfile.Load(43, path) is null);
+        File.WriteAllText(path, "{}"); Assert(DesktopProfile.Load(42, path) is null);
+    }
+    finally { File.Delete(path); }
+}));
+await Test("View stale callbacks cannot fault a replacement or leave takeover latched", () => Sta(() =>
+{
+    using var dispatcher = new System.Windows.Forms.Control();
+    using var oldViewer = new RdpWindow(new ViewerPreferences { Persist = false });
+    using var currentViewer = new RdpWindow(new ViewerPreferences { Persist = false });
+    var manager = new SessionManager(dispatcher, null, false);
+    const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+    var viewerField = typeof(SessionManager).GetField("viewer", flags)!;
+    viewerField.SetValue(manager, currentViewer);
+    typeof(SessionManager).GetMethod("OnViewerLost", flags)!.Invoke(manager, [oldViewer, "stale disconnect"]);
+    Assert(!(bool)typeof(SessionManager).GetField("connectionLost", flags)!.GetValue(manager)!);
+    var gate = (SemaphoreSlim)typeof(SessionManager).GetField("gate", flags)!.GetValue(manager)!;
+    gate.Wait();
+    var pending = (Task)typeof(SessionManager).GetMethod("ChangeControlAsync", flags)!.Invoke(manager, [currentViewer, true])!;
+    viewerField.SetValue(manager, null); gate.Release();
+    var deadline = DateTime.UtcNow.AddSeconds(10);
+    while (!pending.IsCompleted && DateTime.UtcNow < deadline)
+    { System.Windows.Forms.Application.DoEvents(); Thread.Sleep(1); }
+    Assert(pending.IsCompleted); pending.GetAwaiter().GetResult();
+    Assert(!(bool)typeof(SessionManager).GetField("humanControl", flags)!.GetValue(manager)!);
+    manager.DisposeAsync().AsTask().GetAwaiter().GetResult();
+}));
+await Test("View connection control supports keyboard activation", () => Sta(() =>
+{
+    using var dot = new ConnectionDot();
+    int clicks = 0; dot.Click += (_, _) => clicks++;
+    var keyDown = typeof(ConnectionDot).GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+    keyDown.Invoke(dot, [new System.Windows.Forms.KeyEventArgs(System.Windows.Forms.Keys.Space)]);
+    keyDown.Invoke(dot, [new System.Windows.Forms.KeyEventArgs(System.Windows.Forms.Keys.Enter)]);
+    Assert(dot.TabStop && clicks == 2 && dot.AccessibleRole == System.Windows.Forms.AccessibleRole.PushButton);
+}));
+await Test("View hidden PiP leaves no taskbar ghost and restores as an app window", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    Assert(viewer.ShowInTaskbar && (Native.WindowStyle(viewer.Handle, -20) & 0x40000) != 0);
+    viewer.SetViewer(false);
+    Assert(!viewer.ShowInTaskbar && (Native.WindowStyle(viewer.Handle, -20) & 0x40000) == 0);
+    Assert((Native.WindowStyle(viewer.Handle, -20) & 0x80) != 0);
+    viewer.SetViewer(true);
+    Assert(viewer.ShowInTaskbar && (Native.WindowStyle(viewer.Handle, -20) & 0x80) == 0);
+    viewer.CloseHost();
+}));
+await Test("View expanded header reserves space instead of covering the desktop", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    Assert(viewer.Rdp.Parent!.Top == 1);
+    viewer.Expand();
+    var preview = viewer.Rdp.Parent!;
+    Assert(preview.Top == 38 * viewer.DeviceDpi / 96 + 1);
+    Assert(preview.Bottom == viewer.ClientSize.Height - 1);
+    Assert(Math.Abs(preview.Width / (double)preview.Height - 16d / 9) < .002);
+    viewer.Collapse(); Assert(viewer.Rdp.Parent!.Top == 1);
+    viewer.CloseHost();
+}));
+await Test("View clicking again hides the action buttons without taking over", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    viewer.ToggleControls(); Assert(viewer.ControlsRevealed && !viewer.HumanControl);
+    viewer.ToggleControls(); Assert(!viewer.ControlsRevealed && !viewer.HumanControl);
+    viewer.Expand(); Assert(viewer.ControlsRevealed);
+    viewer.ToggleControls(); Assert(!viewer.ControlsRevealed && viewer.ViewMode == "expanded");
+    viewer.CloseHost();
+}));
+await Test("View auto collapse can be disabled independently of automatic resume", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    viewer.CollapseOnClickOutside = false; viewer.Expand(); viewer.ObservePointer(true, true, true);
+    Assert(viewer.ViewMode == "expanded" && !viewer.HumanControl);
+    viewer.ResumeMode = ResumeMode.OnClickOutside; viewer.SetHumanControl(true);
+    viewer.ObservePointer(false, true, true); viewer.ObservePointer(true, true, true);
+    Assert(viewer.ViewMode == "expanded" && !viewer.HumanControl);
+    viewer.CloseHost();
+}));
+await Test("agent handoff invalidates old input and supports taking control back", async () =>
+{
+    var control = new DesktopControl();
+    JsonObject Args(Binding b) => new() { ["sessionId"] = b.SessionId, ["generation"] = b.Generation };
+    var a = control.Attach("a", 42, true);
+    control.Validate("a", Args(a), true);
+    var observer = control.Attach("b", 42, false);
+    control.Validate("b", Args(observer), false);
+    await Throws<InvalidOperationException>(() => Sync(() => control.Validate("b", Args(observer), true)));
+    var b = control.Attach("b", 42, true);
+    control.Validate("b", Args(b), true);
+    await Throws<InvalidOperationException>(() => Sync(() => control.Validate("a", Args(a), true)));
+    control.Validate("a", Args(control.BindingFor("a")!), false);
+    var nextA = control.Attach("a", 42, true);
+    Assert(nextA.Generation != a.Generation);
+    control.Validate("a", Args(nextA), true);
+    await Throws<InvalidOperationException>(() => Sync(() => control.Validate("b", Args(b), true)));
+});
+await Test("disconnected logoff requires current controller while agents remain attached", async () =>
+{
+    var control = new DesktopControl();
+    JsonObject Args(Binding b) => new() { ["sessionId"] = b.SessionId, ["generation"] = b.Generation };
+    control.ValidateLogoff("unattached", new() { ["sessionId"] = 42 });
+    var a = control.Attach("a", 42, true);
+    var observer = control.Attach("b", 42, false);
+    await Throws<InvalidOperationException>(() => Sync(() => control.ValidateLogoff("unattached", Args(a))));
+    await Throws<InvalidOperationException>(() => Sync(() => control.ValidateLogoff("b", Args(observer))));
+    control.ValidateLogoff("a", Args(a));
+    var b = control.Attach("b", 42, true);
+    await Throws<InvalidOperationException>(() => Sync(() => control.ValidateLogoff("a", Args(a))));
+    control.ValidateLogoff("b", Args(b));
+});
+await Test("detaching another agent preserves controller; reset rejects every old binding", async () =>
+{
+    var control = new DesktopControl(); var a = control.Attach("a", 42, true);
+    control.Attach("b", 42, false); control.Detach("b"); Assert(control.Controller == "a");
+    control.Reset(); Assert(control.Controller is null);
+    await Throws<InvalidOperationException>(() => Sync(() => control.Validate("a", new() { ["sessionId"] = 42, ["generation"] = a.Generation }, true)));
+});
 await Test("wrapper forwards installed helper protocol shape and Unicode", async () =>
 {
     using var helper = new HelperProcess(identity, requireElevation: false);

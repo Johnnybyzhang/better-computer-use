@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 
 namespace BetterComputerUse;
 
-internal sealed class McpServer(SessionManager manager, bool allowElevation)
+internal sealed class McpServer(DesktopClient manager, bool allowElevation)
 {
     private bool initialized;
     private bool ready;
@@ -29,7 +29,7 @@ internal sealed class McpServer(SessionManager manager, bool allowElevation)
             }
             try
             {
-                var adminToolsBefore = manager.AdminToolsAvailable;
+                var adminToolsBefore = (manager.AdminToolsAvailable, manager.ElevatedComputerAvailable);
                 object result;
                 var args = request["params"] as JsonObject ?? new JsonObject();
                 if (method == "initialize")
@@ -40,11 +40,15 @@ internal sealed class McpServer(SessionManager manager, bool allowElevation)
                     initialized = true;
                     result = new { protocolVersion = version, capabilities = new { tools = new { listChanged = true } },
                         serverInfo = new { name = "better-computer-use", version = System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(McpServer).Assembly)?.InformationalVersion ?? "unknown" },
-                        instructions = "Computer Use runs only in the managed Windows child session. Start a session, then pass its sessionId and generation on every call. Take control in the viewer pauses automation. No parent-desktop fallback." };
+                        instructions = "Computer Use runs only in the managed Windows child session. Start a session, then pass its sessionId and generation on every call. Other agents can attach and take over using session_start or session_take_control. After handoff use the returned binding; stale input is rejected. Take over in the viewer pauses automation. No parent-desktop fallback." };
                 }
                 else if (method == "ping") result = new { };
                 else if (!ready) { await WriteError(id, -32002, "Initialize and send notifications/initialized first"); continue; }
-                else if (method == "tools/list") result = new { tools = Tools() };
+                else if (method == "tools/list")
+                {
+                    await manager.RefreshCapabilitiesAsync();
+                    result = new { tools = Tools() };
+                }
                 else if (method == "tools/call")
                 {
                     var name = args.RequiredString("name");
@@ -70,32 +74,20 @@ internal sealed class McpServer(SessionManager manager, bool allowElevation)
                 }
                 else { await WriteError(id, -32601, "Method not found"); continue; }
                 await output.WriteLineAsync(JsonSerializer.Serialize(new { jsonrpc = "2.0", id, result }, Wire.Json));
-                if (adminToolsBefore != manager.AdminToolsAvailable)
+                if (adminToolsBefore != (manager.AdminToolsAvailable, manager.ElevatedComputerAvailable))
                     await output.WriteLineAsync("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}");
             }
             catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or JsonException)
             { await WriteError(id, -32602, ex.Message); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            { await WriteError(id, -32603, ex.Message); }
         }
 
         Task WriteError(JsonNode? id, int code, string message) => output.WriteLineAsync(JsonSerializer.Serialize(new
             { jsonrpc = "2.0", id, error = new { code, message } }, Wire.Json));
     }
 
-    private async Task<object> CallAsync(string name, JsonObject args) => name switch
-    {
-        "session_status" => await manager.StatusAsync(),
-        "session_restart_worker" => await manager.RestartWorkerAsync(args),
-        "session_start" => await manager.StartAsync(args["width"]?.GetValue<int>() ?? 1920, args["height"]?.GetValue<int>() ?? 1080,
-            args["showViewer"]?.GetValue<bool>() ?? false, args["enableChildSessions"]?.GetValue<bool>() ?? false, args["mode"]?.GetValue<string>() ?? "admin"),
-        "session_viewer" => await manager.ViewerAsync(args),
-        "session_stop" => await manager.StopAsync(args),
-        "session_logoff" => await manager.LogoffDisconnectedAsync(args),
-        "computer_use" => await manager.ComputerAsync(args, false),
-        "launch_process_as_admin" => await manager.LaunchProcessAsAdminAsync(args),
-        "computer_use_elevated" when allowElevation => await manager.ComputerAsync(args, true),
-        _ when ComputerMethods.Allowed.Contains(name, StringComparer.Ordinal) => await manager.ComputerAsync(NativeToolCatalog.ForwardArguments(name, args), false),
-        _ => throw new ArgumentException("Unknown tool.")
-    };
+    private Task<object> CallAsync(string name, JsonObject args) => manager.CallAsync(name, args);
 
     private JsonObject[] Tools()
     {
@@ -109,7 +101,8 @@ internal sealed class McpServer(SessionManager manager, bool allowElevation)
             ["showViewer"] = Type("boolean"), ["enableChildSessions"] = Type("boolean", "Explicitly request WTSEnableChildSessions if disabled; native permissions still apply.") };
         start["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("admin", "user"), ["default"] = "admin",
             ["description"] = "Admin requests main-session UAC for the Computer Use executable at session init. Declining UAC falls back to user mode. User mode has no administrator tools." };
-        var stop = Bound(); stop["logoff"] = Type("boolean", "Defaults false (disconnect only). True logs off the owned child session and closes its applications; unsaved work may be lost.");
+        start["takeControl"] = Type("boolean", "Defaults true: transfer agent control. False attaches for observation without interrupting the current agent.");
+        var stop = Bound(); stop["logoff"] = Type("boolean", "Defaults false (detach this agent, keep the desktop alive). True logs off the shared child session and closes its applications; unsaved work may be lost.");
         var view = Bound(); view["visible"] = Type("boolean");
         var computer = Bound();
         computer["method"] = new JsonObject { ["type"] = "string", ["enum"] = JsonSerializer.SerializeToNode(ComputerMethods.Allowed) };
@@ -121,16 +114,17 @@ internal sealed class McpServer(SessionManager manager, bool allowElevation)
         process["workingDirectory"] = Type("string", "Optional existing absolute local directory; defaults to the executable directory.");
         var result = new List<JsonObject> {
             Tool("session_status", "Inspect manager state, Windows session IDs, worker/helper PIDs and executable hash.", Schema(new JsonObject())),
-            Tool("session_start", "Create an owned child session and start ChatGPT's Computer Use executable there. Refuses pre-existing child sessions.", Schema(start)),
+            Tool("session_start", "Create, attach to, or resume the shared child desktop. Defaults to PiP and transfers agent control; takeControl:false attaches for observation. Returns this client's binding. Existing applications stay open.", Schema(start)),
+            Tool("session_take_control", "Transfer agent control to this client without closing applications; resume a disconnected desktop or create one if none exists. Human control remains paused until locally released. Returns a fresh binding. When the previous host mode is unknown, recovery or creation defaults to user mode to avoid unexpected UAC; set mode:admin explicitly if needed. Never override physical Escape interruption.", Schema(new JsonObject { ["mode"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("admin", "user") } })),
             Tool("session_restart_worker", "Explicitly restart a failed worker without logging off applications. Returns a new generation; do not use to override a person's Escape interruption.", Schema(Bound(), "sessionId", "generation")),
-            Tool("session_viewer", "Show or hide the RDP viewer. Human control is granted only by the local Take control button.", Schema(view, "sessionId", "generation")),
-            Tool("session_stop", "Stop the worker and disconnect; optionally explicitly log off the owned session.", Schema(stop, "sessionId", "generation")),
-            Tool("session_logoff", "Recover before creating a fresh desktop: log off an existing disconnected child session only when no task owns its lock. Closes its applications and unsaved work. Use sessionId from session_status.existingChildSession, then session_start. No extra approval prompt is needed when replacing the abandoned desktop is within the user's task. Refuses connected, busy, changed or parent sessions.", Schema(new JsonObject { ["sessionId"] = Type("integer") }, "sessionId")),
+            Tool("session_viewer", "Show or hide the floating RDP viewer. Human control is granted only by the local Take over button.", Schema(view, "sessionId", "generation")),
+            Tool("session_stop", "Detach this agent while leaving the shared desktop running; logoff:true explicitly closes its applications.", Schema(stop, "sessionId", "generation")),
+            Tool("session_logoff", "Recover before creating a fresh desktop: log off an existing disconnected child session only when no task owns its lock. Closes its applications and unsaved work. Use sessionId from session_status.existingChildSession; if agents remain attached, only the controller with its current generation can log off. Refuses connected, busy, changed or parent sessions.", Schema(Bound(), "sessionId")),
             Tool("computer_use", "Call the installed Computer Use executable inside the bound child session. Paused during human control; never targets the parent desktop.", Schema(computer, "sessionId", "generation", "method")) };
         result.AddRange(ComputerMethods.Allowed.Select(NativeToolCatalog.Tool));
         if (manager.AdminToolsAvailable) result.Add(Tool("launch_process_as_admin", "Launch a specified .exe as administrator inside the owned child session. Windows UAC in the main session is the only approval prompt; returns verified PID/session/elevation. No automatic retries. The launched application stays open.",
             Schema(process, "sessionId", "generation", "executablePath")));
-        if (allowElevation && manager.AdminToolsAvailable) result.Add(Tool("computer_use_elevated", "One elevated Computer Use request, with only Windows UAC in the main session. Same session binding and parameters as computer_use.",
+        if (allowElevation && manager.ElevatedComputerAvailable) result.Add(Tool("computer_use_elevated", "One elevated Computer Use request, with only Windows UAC in the main session. Same session binding and parameters as computer_use.",
             Schema((JsonObject)computer.DeepClone(), "sessionId", "generation", "method")));
         return result.ToArray();
     }

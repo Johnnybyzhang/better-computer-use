@@ -1,6 +1,6 @@
 namespace BetterComputerUse;
 
-// MCP transports are per task. Only desktop creation/ownership is exclusive, not tool discovery.
+// The shared host owns the desktop lease; individual MCP clients share that host.
 // An exclusive OS file handle is process-independent and released on crashes; no thread affinity.
 internal sealed class DesktopLease : IDisposable
 {
@@ -15,7 +15,7 @@ internal sealed class DesktopLease : IDisposable
         try { return new DesktopLease(new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None)); }
         catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33)
         {
-            throw new InvalidOperationException("Another task owns the child desktop. Continue in its owning task or stop that session there before creating another. These MCP tools remain available.");
+            throw new InvalidOperationException("A desktop host already holds the Windows desktop lease. Connect through the shared host. If an older plugin version is running, disconnect its viewer before switching versions; applications can stay open.");
         }
     }
 

@@ -21,9 +21,13 @@ per-app or per-click approval windows are added.
 
 The skill prefers this backend on Windows unless requested otherwise. Windows Home
 is excluded unless explicitly requested; macOS uses its built-in Computer Use.
-Only one task owns the child desktop at a time, while other MCP tasks keep their tools.
-View lets automation run; Take control pauses automation for manual input. Logoff
-closes that child desktop's applications and unsaved work.
+Agents share one persistent child desktop. `session_start` attaches or resumes it;
+`session_take_control` transfers automation control and returns a fresh binding.
+Only the selected agent sends input, while observers can read the desktop.
+The viewer starts as PiP: click it to reveal the actions, then Take over to pause
+automation for manual input. Closing or collapsing follows your resume settings.
+`session_stop` detaches the agent and preserves applications. Explicit logoff closes
+the child desktop's applications and unsaved work.
 
 Verify an extracted bundle without installing:
 

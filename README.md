@@ -11,11 +11,21 @@ steer the agent, or rely on an awkward remote setup.
 Better Computer Use keeps the agent, MCP connection and steering UI in your normal
 Windows session. The installed OpenAI Computer Use executable and automated apps
 run in a Windows child session, with their own desktop and input. You can continue
-using the main desktop to talk to the agent. An optional **View / Take control**
-window lets you inspect or interact with the child desktop.
+using the main desktop to talk to the agent. A borderless **picture-in-picture viewer** shows the child desktop with a soft
+connection dot. Hover over the top edge for its title-bar overlay; click the preview
+to toggle two rounded buttons: **Take over** and **Expand view / Collapse**. Take over pauses
+agent input and opens the large view. Both sizes stay on top, preserve the desktop's
+aspect ratio and avoid grey padding. Hover/action overlays do not resize the preview.
+
+The large view reserves its header for controls so they never cover the desktop.
+**Collapse on click outside** is configurable, including for read-only viewing.
+**Resume automation** separately offers **On close**, **On close or click outside**,
+or **Manually**. While you own control, the primary button reads **Taken control**
+and is disabled; expanding again retains your control. Hiding PiP removes
+its taskbar entry; the tray icon restores it with a click. Hiding never logs off apps.
 
 This is an early independent integration with a private, version-dependent OpenAI
-executable protocol. UI polish is deferred; see [validation and known limitations](docs/validation.md).
+executable protocol; see [validation and known limitations](docs/validation.md).
 
 ## Credits
 
@@ -48,19 +58,25 @@ RDP/helper compatibility still requires interactive verification on Windows on A
 
 ```text
 Main Windows session (standard user)
-  Agent / steering UI ? MCP adapter + child-session manager
-                        ?? optional View / Take control viewer
-                        ?? UAC broker for elevated startup
-                               ? authenticated session-bound IPC
-                               ?
-Child Windows session
-  Persistent worker ? locally installed codex-computer-use.exe
-                       ?? applications being automated
+  Agent A MCP --+-- shared desktop host -- PiP / large viewer
+  Agent B MCP --+          |
+                          +-- main-session UAC broker
+                          |
+                   authenticated session-bound IPC
+                          |
+Child Windows session     v
+  Persistent worker --> installed codex-computer-use.exe --> applications
 ```
 
-There can be any number of MCP processes. Only child-desktop ownership is exclusive:
-`session_start` takes the lock, and stop/exit releases it. Other tasks retain their
-tool inventory and receive a busy result rather than losing their MCP connection.
+Each MCP connection attaches to a shared desktop host in the normal Windows session.
+The host keeps RDP and the installed helper alive after agents disconnect. Another
+agent can take over without closing applications: `session_start` creates or resumes
+the desktop and transfers agent control by default; `takeControl:false` attaches as
+an observer. `session_take_control` transfers control between attached agents.
+Input is serialized, and the previous controller's binding is invalidated. Human
+control pauses agent input until the viewer releases it. Closing an MCP connection
+or calling `session_stop` detaches only that agent. To disconnect the host itself
+without logging off, use **Disconnect desktop and exit** in its tray menu.
 
 Session initialization defaults to **admin mode**. A UAC request on the main desktop
 starts an elevated child worker and elevated Computer Use executable. Ordinary
@@ -78,23 +94,31 @@ the main session; the backend never clicks it on the user's behalf.
 | Tool | Behavior |
 | --- | --- |
 | `session_status` | Mode, worker/helper identity and existing-child recovery information. |
-| `session_start` | Create a child desktop; `mode` is `admin` (default) or `user`. |
+| `session_start` | Create, attach or resume; PiP and agent control by default. `mode`: `admin` (default) or `user` for a new worker. |
 | `session_viewer` | Show or hide the viewer. Local Take control pauses automation. |
+| `session_take_control` | Transfer agent control and return a fresh client binding. |
 | `session_restart_worker` | Restart the helper and rotate generation without closing apps. Admin mode requests new UAC. |
-| `session_stop` | Disconnect by default; `logoff:true` closes the owned desktop and its apps. |
+| `session_stop` | Detach this agent by default; `logoff:true` explicitly closes the shared desktop and its apps. |
 | `session_logoff` | Clear an unowned, disconnected child desktop before starting fresh. |
 | Native named tools / `computer_use` | Forward the bundled helper's public Windows capture, UI, input, app and audio operations. |
 | `launch_process_as_admin` | Admin mode only; verify a suspended application in the child session before letting it execute. |
 
-Every owned-session operation takes the returned `sessionId` and `generation`.
-Discover window IDs inside that session. `end_turn` ends a helper turn, not desktop
-ownership. Never replay ambiguous failed input or launch operations automatically.
+Every attached-session operation takes that client's returned `sessionId` and
+`generation`. After a handoff, read status for an observation binding or call
+`session_take_control` to obtain input control again. Never replay ambiguous failed
+input or launch operations automatically.
 
-For abandoned desktops, read `session_status.existingChildSession`. If `canLogoff`
-is true and replacement is intended, call `session_logoff` with its `sessionId`, then
-`session_start`. Logoff closes that desktop's apps and unsaved work. Busy or connected
-desktops cannot be cleared this way. Host shell commands still run on the main desktop;
-use child-bound tools for application launches, including diagnostic invocations.
+Disconnected desktops are resumed by `session_start`, including after a host crash.
+The backend verifies the current child relationship and Windows user before routing
+requests, and rotates bindings after worker recovery. Existing applications survive.
+`session_logoff` remains an explicit way to discard a disconnected, unmanaged desktop;
+it is not the normal reconnect path. `session_stop(logoff:true)` ends the shared desktop
+and closes its applications; use it only when that is intended.
+
+The host is shared by clients of the same installed executable. Before switching to
+a different build, use the old viewer's tray menu to disconnect and exit, then start
+the new build. This preserves the child desktop. Attaching to an existing host keeps
+its current admin/user mode; it does not prompt for UAC again.
 
 ## Develop
 

@@ -23,6 +23,7 @@ internal static class Worker
         if (args[0] is not ("session-worker" or "elevated-worker" or "session-user-worker") || (args[0] == "session-user-worker") == elevated)
             throw new UnauthorizedAccessException("Worker must match the selected admin or user-space session mode.");
         var persistent = args[0] is "session-worker" or "session-user-worker";
+        Native.FreeConsole();
 
         using var lifetime = new CancellationTokenSource();
         using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous,

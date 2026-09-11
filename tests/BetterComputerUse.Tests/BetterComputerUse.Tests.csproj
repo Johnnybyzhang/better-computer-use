@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <PropertyGroup><OutputType>Exe</OutputType><ApplicationManifest>../../src/BetterComputerUse/app.manifest</ApplicationManifest></PropertyGroup>
   <ItemGroup><ProjectReference Include="../../src/BetterComputerUse/BetterComputerUse.csproj" /></ItemGroup>
 </Project>
