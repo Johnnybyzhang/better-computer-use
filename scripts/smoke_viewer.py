@@ -73,7 +73,7 @@ try:
     reveal(host); button(host, "Expand view")
     wait_state(b, False, "expanded")
     assert b.call("end_turn", binding(selected))["ok"]
-    button(host, "-"); wait_state(b, False, "pip")
+    button(host, "Collapse"); wait_state(b, False, "pip")
     b.call("session_stop", binding(selected))
     print("PASS two-click viewer handlers, human input pause, agent handoff while human controls, collapse-to-resume and read-only expansion", flush=True)
 finally:

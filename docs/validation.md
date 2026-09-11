@@ -1,5 +1,34 @@
 # Validation and known limitations
 
+## Connected-desktop follow-up
+
+The Windows parent desktop was subsequently connected and the following checks ran:
+
+- The bundled outer Computer Use runtime activated/captured a real parent window,
+  then discovered and captured the redesigned viewer. Real injected clicks revealed
+  the PiP controls and expanded the viewer; a fresh capture showed the button change
+  from Expand view to Collapse and the live child-desktop pixels.
+- The inner helper discovered a dedicated child-session GUI, typed a known string,
+  and returned that exact string in a fresh UI Automation document-text read.
+- A second client attached as an observer, queried the inner session, was refused
+  controller-only work, and detached without transferring the first client's control.
+- The isolated background build passed 45 noninteractive tests. The full suite then
+  ran inside the child desktop: 66 tests passed with no interactive checks skipped.
+  Geometry tests cover exact desktop aspect fitting and no upscaling beyond the RDP
+  desktop. Added UI regressions cover hover overlays, read-only click-out, and hidden
+  window styles/taskbar restoration, non-overlapping expanded chrome, control-button
+  toggling, retained human-control labeling and independent auto-collapse/resume settings.
+
+The user took over outer testing after canceling the outer Computer Use run. No further
+outer automation was attempted. User feedback drove borderless PiP, a soft alpha-blended
+connection dot, a hover title bar, two rounded action buttons, an Expand/Collapse toggle,
+retained topmost behavior, aspect fitting, taskbar ghost removal and a dedicated tray/app
+icon. The new development build was opened for manual validation with the existing child
+desktop preserved. No screenshot-tool-specific click-out exception is implemented.
+
+Physical screenshot-tool interactions, tray/taskbar behavior, multi-monitor/DPI and
+manual UAC testing remain subject to the user's connected-desktop walkthrough.
+
 ## Shared desktop and PiP revision (2026-09-11)
 
 Checked locally on Windows x64 before pushing the PR:

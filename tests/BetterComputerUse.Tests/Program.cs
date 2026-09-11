@@ -3,6 +3,21 @@ using System.IO.Pipes;
 using System.Text.Json.Nodes;
 using BetterComputerUse;
 
+// Run UI regressions on the child desktop without stealing the user's parent desktop.
+if (args.FirstOrDefault() == "--launch-child-suite")
+{
+    var session = Native.ChildSession() ?? throw new Exception("Start the test desktop first.");
+    Native.VerifyChildSession(session);
+    Launcher.LaunchTask(["--child-suite", Path.GetFullPath(args[1])], new Binding(session, "test-suite"), false);
+    return;
+}
+if (args.FirstOrDefault() == "--child-suite")
+{
+    Native.FreeConsole();
+    var report = new StreamWriter(args[1], false, new System.Text.UTF8Encoding(false)) { AutoFlush = true };
+    Console.SetOut(report); Console.SetError(report);
+}
+
 // Opt-in process whose document exists in a TextBox, for live reconnect/crash tests.
 if (args.FirstOrDefault() == "--launch-desktop-document")
 {
@@ -13,6 +28,7 @@ if (args.FirstOrDefault() == "--launch-desktop-document")
 }
 if (args.FirstOrDefault() == "--desktop-document")
 {
+    Native.FreeConsole();
     var thread = new Thread(() =>
     {
         using var form = new System.Windows.Forms.Form { Text = "BCU unsaved reconnect test", Width = 700, Height = 450 };
@@ -302,9 +318,10 @@ await Test("View collapse resumes by default and manual mode keeps input paused"
     Assert(releases == 1 && !viewer.HumanControl && viewer.ViewMode == "pip" && !Native.IsWindowEnabled(viewer.Rdp.Handle));
     viewer.ResumeMode = ResumeMode.Manual; viewer.SetHumanControl(true); viewer.Collapse();
     Assert(releases == 1 && viewer.HumanControl && !Native.IsWindowEnabled(viewer.Rdp.Handle));
-    viewer.RevealControls(); viewer.RequestTakeover();
+    Assert(viewer.ControlButtonText == "Taken control" && !viewer.ControlButtonEnabled);
+    viewer.Expand();
     Assert(viewer.HumanControl && viewer.ViewMode == "expanded" && Native.IsWindowEnabled(viewer.Rdp.Handle));
-    viewer.ReturnToAgent(); Assert(releases == 2 && !viewer.HumanControl);
+    viewer.ReturnToAgent(); Assert(releases == 2 && !viewer.HumanControl && viewer.ControlButtonText == "Take over" && viewer.ControlButtonEnabled);
     viewer.CloseHost();
 }));
 await Test("View collapsing cancels a pending takeover before input is granted", () => Sta(() =>
@@ -342,7 +359,78 @@ await Test("View read-only expansion does not request or enable human control", 
     viewer.SetHumanControl(false); viewer.SetViewer(true);
     viewer.ControlRequested += _ => throw new Exception("Unexpected control request");
     viewer.Expand();
-    Assert(viewer.ViewMode == "expanded" && !viewer.HumanControl && !Native.IsWindowEnabled(viewer.Rdp.Handle));
+    Assert(viewer.ViewMode == "expanded" && viewer.TopMost && !viewer.HumanControl && !Native.IsWindowEnabled(viewer.Rdp.Handle));
+    viewer.CloseHost();
+}));
+await Test("View hovering reveals PiP chrome without resizing the remote preview", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    var preview = viewer.Rdp.Bounds;
+    viewer.UpdateHover(viewer.PointToScreen(new System.Drawing.Point(40, 15)));
+    Assert(viewer.Rdp.Bounds == preview && viewer.ViewMode == "pip" && !viewer.HumanControl);
+    viewer.UpdateHover(new System.Drawing.Point(-10000, -10000));
+    Assert(viewer.Rdp.Bounds == preview);
+    viewer.CloseHost();
+}));
+await Test("View read-only expansion collapses on click-out without changing control", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    viewer.Expand(); viewer.ObservePointer(true, true, true);
+    Assert(viewer.ViewMode == "pip" && !viewer.HumanControl && viewer.TopMost);
+    viewer.CloseHost();
+}));
+await Test("viewer geometry fits the desktop without grey padding or stretching", () => Sync(() =>
+{
+    var desktop = new System.Drawing.Size(1920, 1080);
+    foreach (var area in new[] { new System.Drawing.Rectangle(0, 0, 2560, 1400), new System.Drawing.Rectangle(-1280, 0, 1280, 984) })
+    {
+        var fitted = ViewerGeometry.Fit(desktop, area, 38, 1);
+        Assert(area.Contains(fitted) && fitted.Width <= 1922 && fitted.Height <= 1120);
+        Assert(Math.Abs((fitted.Width - 2d) / (fitted.Height - 40d) - 16d / 9) < .002);
+        var resized = ViewerGeometry.Resize(fitted, desktop, 38, 3, area.Size);
+        Assert(Math.Abs((resized.Width - 2d) / (resized.Height - 40d) - 16d / 9) < .002);
+    }
+}));
+await Test("View hidden PiP leaves no taskbar ghost and restores as an app window", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    Assert(viewer.ShowInTaskbar && (Native.WindowStyle(viewer.Handle, -20) & 0x40000) != 0);
+    viewer.SetViewer(false);
+    Assert(!viewer.ShowInTaskbar && (Native.WindowStyle(viewer.Handle, -20) & 0x40000) == 0);
+    Assert((Native.WindowStyle(viewer.Handle, -20) & 0x80) != 0);
+    viewer.SetViewer(true);
+    Assert(viewer.ShowInTaskbar && (Native.WindowStyle(viewer.Handle, -20) & 0x80) == 0);
+    viewer.CloseHost();
+}));
+await Test("View expanded header reserves space instead of covering the desktop", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    Assert(viewer.Rdp.Parent!.Top == 1);
+    viewer.Expand();
+    var preview = viewer.Rdp.Parent!;
+    Assert(preview.Top == 38 * viewer.DeviceDpi / 96 + 1);
+    Assert(preview.Bottom == viewer.ClientSize.Height - 1);
+    Assert(Math.Abs(preview.Width / (double)preview.Height - 16d / 9) < .002);
+    viewer.Collapse(); Assert(viewer.Rdp.Parent!.Top == 1);
+    viewer.CloseHost();
+}));
+await Test("View clicking again hides the action buttons without taking over", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    viewer.ToggleControls(); Assert(viewer.ControlsRevealed && !viewer.HumanControl);
+    viewer.ToggleControls(); Assert(!viewer.ControlsRevealed && !viewer.HumanControl);
+    viewer.Expand(); Assert(viewer.ControlsRevealed);
+    viewer.ToggleControls(); Assert(!viewer.ControlsRevealed && viewer.ViewMode == "expanded");
+    viewer.CloseHost();
+}));
+await Test("View auto collapse can be disabled independently of automatic resume", () => Sta(() =>
+{
+    using var viewer = new RdpWindow(new ViewerPreferences { Persist = false }); viewer.Show(); viewer.SetViewer(true);
+    viewer.CollapseOnClickOutside = false; viewer.Expand(); viewer.ObservePointer(true, true, true);
+    Assert(viewer.ViewMode == "expanded" && !viewer.HumanControl);
+    viewer.ResumeMode = ResumeMode.OnClickOutside; viewer.SetHumanControl(true);
+    viewer.ObservePointer(false, true, true); viewer.ObservePointer(true, true, true);
+    Assert(viewer.ViewMode == "expanded" && !viewer.HumanControl);
     viewer.CloseHost();
 }));
 await Test("agent handoff invalidates old input and supports taking control back", async () =>

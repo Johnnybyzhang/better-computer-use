@@ -11,10 +11,18 @@ steer the agent, or rely on an awkward remote setup.
 Better Computer Use keeps the agent, MCP connection and steering UI in your normal
 Windows session. The installed OpenAI Computer Use executable and automated apps
 run in a Windows child session, with their own desktop and input. You can continue
-using the main desktop to talk to the agent. A floating **picture-in-picture viewer** shows the child desktop by default. Click
-it to reveal **Take over**, then click that button to use a large window yourself.
-Closing the large view resumes the agent and returns to PiP. The viewer settings
-also offer resume-on-click-outside and manual-only resume.
+using the main desktop to talk to the agent. A borderless **picture-in-picture viewer** shows the child desktop with a soft
+connection dot. Hover over the top edge for its title-bar overlay; click the preview
+to toggle two rounded buttons: **Take over** and **Expand view / Collapse**. Take over pauses
+agent input and opens the large view. Both sizes stay on top, preserve the desktop's
+aspect ratio and avoid grey padding. Hover/action overlays do not resize the preview.
+
+The large view reserves its header for controls so they never cover the desktop.
+**Collapse on click outside** is configurable, including for read-only viewing.
+**Resume automation** separately offers **On close**, **On close or click outside**,
+or **Manually**. While you own control, the primary button reads **Taken control**
+and is disabled; expanding again retains your control. Hiding PiP removes
+its taskbar entry; the tray icon restores it with a click. Hiding never logs off apps.
 
 This is an early independent integration with a private, version-dependent OpenAI
 executable protocol; see [validation and known limitations](docs/validation.md).

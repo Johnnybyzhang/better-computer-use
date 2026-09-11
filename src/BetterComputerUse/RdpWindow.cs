@@ -7,83 +7,128 @@ namespace BetterComputerUse;
 internal sealed class RdpWindow : Form
 {
     internal readonly RdpControl Rdp = new() { Dock = DockStyle.Fill, TabStop = false };
-    private readonly Panel surface = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(22, 25, 29) };
-    private readonly Panel header = new() { Dock = DockStyle.Top, Height = 40, BackColor = Color.FromArgb(31, 35, 41) };
-    private readonly FlowLayoutPanel actions = new() { Dock = DockStyle.Bottom, Height = 46, Visible = false,
-        BackColor = Color.FromArgb(31, 35, 41), Padding = new Padding(6), WrapContents = false };
-    private readonly Label status = new() { AutoSize = false, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft,
-        ForeColor = Color.FromArgb(170, 223, 213), Padding = new Padding(12, 0, 0, 0) };
+    private readonly Panel surface = new() { BackColor = Color.FromArgb(22, 25, 29) };
+    private readonly Panel header = new() { Dock = DockStyle.Top, Height = 38, BackColor = Color.FromArgb(29, 34, 40) };
+    private readonly FlowLayoutPanel actions = new RoundedActionPanel() { Height = 48, Visible = false,
+        BackColor = Color.FromArgb(29, 34, 40), Padding = new Padding(8), WrapContents = false };
+    private readonly Label title = new() { Text = "Computer Use", AutoSize = false, TextAlign = ContentAlignment.MiddleLeft,
+        ForeColor = Color.FromArgb(236, 241, 245), Font = new Font("Segoe UI", 9, FontStyle.Bold) };
+    private readonly Label status = new() { AutoSize = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleRight,
+        ForeColor = Color.FromArgb(127, 205, 188), Font = new Font("Segoe UI", 8) };
+    private readonly Button collapse = new ViewerGlyphButton(ViewerGlyph.Collapse, "-", "Collapse to floating view");
+    private readonly Button maximize = new ViewerGlyphButton(ViewerGlyph.Maximize, "Maximize", "Maximize or restore large view");
+    private readonly Button close = new ViewerGlyphButton(ViewerGlyph.Close, "Close", "Close viewer");
+    private readonly Button settingsButton = new ViewerGlyphButton(ViewerGlyph.Menu, "...", "Resume automation settings");
+    private readonly ConnectionDot connectionDot = new();
+    private readonly ViewerSettings settingsMenu = new();
+    private bool pipHeaderRevealed;
+    private readonly ToolTip tips = new();
+    private readonly Size desktopSize;
+    private Point? previewDragStart;
+    private Point previewWindowStart;
+    private bool previewDragged;
+    private Rectangle? restoredBounds;
     private readonly Button take = MakeButton("Take over", 110);
+    private readonly Button expand = MakeButton("Expand view", 112);
     private readonly Button returnToAgent = MakeButton("Return to agent", 140);
     private readonly System.Windows.Forms.Timer outsideClick = new() { Interval = 25 };
-    private readonly NotifyIcon tray = new() { Icon = SystemIcons.Application, Text = "Computer Use", Visible = true };
+    private readonly Icon appIcon = ViewerBranding.LoadIcon();
+    private readonly NotifyIcon tray = new() { Text = "Better Computer Use" };
     private readonly ViewerPreferences preferences;
     internal event Action<bool>? ControlRequested;
     internal bool HumanControl { get; private set; }
     internal bool ViewerVisible { get; private set; }
     internal string ViewMode => !ViewerVisible ? "hidden" : expanded ? "expanded" : "pip";
     internal bool ControlsRevealed => actions.Visible;
+    internal string ControlButtonText => take.Text;
+    internal bool ControlButtonEnabled => take.Enabled;
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     internal ResumeMode ResumeMode { get => preferences.Resume; set { preferences.Resume = value; preferences.Save(); } }
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal bool CollapseOnClickOutside { get => preferences.CollapseOnClickOutside; set { preferences.CollapseOnClickOutside = value; preferences.Save(); } }
     private bool closing, expanded, agentConnected, mouseWasDown, changingLayout, takeoverPending;
     private string? connectionStatus;
-    private Point? dragStart;
     protected override bool ShowWithoutActivation => !expanded;
 
-    internal RdpWindow(ViewerPreferences? settings = null)
+    internal RdpWindow(ViewerPreferences? settings = null, Size? desktopSize = null)
     {
         preferences = settings ?? ViewerPreferences.Load();
-        Text = "Computer Use";
+        this.desktopSize = desktopSize ?? new Size(1920, 1080);
+        Text = "Computer Use"; Icon = appIcon; tray.Icon = appIcon; tray.Visible = true;
         Font = new Font("Segoe UI", 9);
-        BackColor = header.BackColor;
+        BackColor = Color.FromArgb(62, 69, 77);
+        Padding = new Padding(1);
+        FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
         ClientSize = new Size(384, 256);
-        MinimumSize = new Size(280, 190);
+        MinimumSize = new Size(360, 200);
         Location = new Point(-20000, -20000);
         ShowInTaskbar = false;
         surface.Controls.Add(Rdp);
-        Controls.Add(surface); Controls.Add(actions); Controls.Add(header);
-        header.Controls.Add(status);
-        var collapse = MakeButton("-", 36); collapse.Dock = DockStyle.Right;
-        collapse.AccessibleName = "Collapse to floating view";
-        collapse.Click += (_, _) => Collapse(); header.Controls.Add(collapse);
-        var settingsButton = MakeButton("...", 36); settingsButton.Dock = DockStyle.Right;
-        settingsButton.AccessibleName = "Resume automation settings";
-        var menu = new ContextMenuStrip();
-        foreach (var (mode, label) in new[] { (ResumeMode.OnClose, "Resume when I close the large view"),
-            (ResumeMode.OnClickOutside, "Also resume when I click outside"), (ResumeMode.Manual, "Resume only when I choose Return to agent") })
-        {
-            var item = new ToolStripMenuItem(label) { Tag = mode };
-            item.Click += (_, _) => ResumeMode = mode;
-            menu.Items.Add(item);
-        }
-        menu.Opening += (_, _) => { foreach (ToolStripMenuItem item in menu.Items) item.Checked = (ResumeMode)item.Tag! == ResumeMode; };
-        settingsButton.Click += (_, _) => menu.Show(settingsButton, new Point(0, settingsButton.Height));
-        header.Controls.Add(settingsButton);
-        returnToAgent.Dock = DockStyle.Right; returnToAgent.Visible = false;
-        returnToAgent.Click += (_, _) => ReturnToAgent(); header.Controls.Add(returnToAgent);
+        Controls.Add(surface); Controls.Add(actions); Controls.Add(header); Controls.Add(connectionDot);
+        header.Controls.AddRange([title, status, collapse, maximize, close, settingsButton, returnToAgent]);
+        collapse.Click += (_, _) => { if (expanded) Collapse(); else SetViewer(false); };
+        maximize.Click += (_, _) => ToggleMaximize();
+        close.Click += (_, _) => { if (expanded) Collapse(); else SetViewer(false); };
+        tips.SetToolTip(collapse, "Return to floating view");
+        tips.SetToolTip(maximize, "Maximize / restore");
+        tips.SetToolTip(close, "Close view");
+        tips.SetToolTip(settingsButton, "Resume automation settings");
+        settingsMenu.CollapseChanged = value => CollapseOnClickOutside = value;
+        settingsMenu.ResumeChanged = value => ResumeMode = value;
+        settingsButton.Click += (_, _) => settingsMenu.Toggle(settingsButton, CollapseOnClickOutside, ResumeMode);
+        connectionDot.Click += (_, _) => ToggleControls();
+        returnToAgent.Visible = false;
+        returnToAgent.Click += (_, _) => ReturnToAgent();
+        take.BackColor = Color.FromArgb(19, 125, 112);
+        expand.Margin = Padding.Empty;
         take.Click += (_, _) => RequestTakeover(); actions.Controls.Add(take);
-        var expand = MakeButton("Expand view", 112);
-        expand.Click += (_, _) => Expand(); actions.Controls.Add(expand);
-        surface.MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) RevealControls(); };
-        MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) RevealControls(); };
-        foreach (Control handle in new Control[] { header, status })
+        expand.Click += (_, _) => { if (expanded) Collapse(); else Expand(); }; actions.Controls.Add(expand);
+        surface.MouseDown += (_, e) =>
         {
-            handle.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left && !expanded) dragStart = e.Location; };
-            handle.MouseMove += (_, e) => { if (dragStart is Point start && e.Button == MouseButtons.Left) Location = new(Location.X + e.X - start.X, Location.Y + e.Y - start.Y); };
-            handle.MouseUp += (_, _) => { dragStart = null; SavePosition(); RevealControls(); };
+            if (e.Button == MouseButtons.Left && !expanded)
+            { previewDragStart = Cursor.Position; previewWindowStart = Location; previewDragged = false; }
+        };
+        surface.MouseMove += (_, e) =>
+        {
+            if (previewDragStart is not Point start || e.Button != MouseButtons.Left) return;
+            var delta = new Size(Cursor.Position.X - start.X, Cursor.Position.Y - start.Y);
+            if (!previewDragged && Math.Abs(delta.Width) + Math.Abs(delta.Height) < 5) return;
+            previewDragged = true; surface.Capture = true; Location = previewWindowStart + delta;
+        };
+        surface.MouseUp += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Left) return;
+            previewDragStart = null; surface.Capture = false;
+            if (previewDragged) SavePosition(); else ToggleControls();
+            previewDragged = false;
+        };
+        MouseUp += (_, e) => { if (e.Button == MouseButtons.Left) ToggleControls(); };
+        foreach (Control handle in new Control[] { header, title, status })
+        {
+            handle.MouseDown += (_, e) =>
+            {
+                if (e.Button != MouseButtons.Left) return;
+                var start = Location;
+                Native.ReleaseCapture(); Native.SendMessage(Handle, 0xa1, 2, 0);
+                SavePosition();
+                if (Math.Abs(Location.X - start.X) < 4 && Math.Abs(Location.Y - start.Y) < 4) ToggleControls();
+            };
+            handle.DoubleClick += (_, _) => { if (expanded) ToggleMaximize(); };
         }
+        Resize += (_, _) => LayoutChrome();
+        LayoutChrome();
         ResizeEnd += (_, _) => SavePosition();
         outsideClick.Tick += (_, _) =>
         {
+            UpdateHover(Cursor.Position);
             var down = (Native.GetAsyncKeyState(1) & 0x8000) != 0;
             var foreground = Native.GetForegroundWindow();
             Native.GetWindowThreadProcessId(foreground, out var pid);
-            // Menus/dialogs owned by this viewer and the secure desktop are not click-out.
             ObservePointer(down, !Bounds.Contains(Cursor.Position), foreground != 0 && pid != 0 && pid != Environment.ProcessId);
         };
         outsideClick.Start();
-        tray.DoubleClick += (_, _) => SetViewer(true);
+        tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) SetViewer(true); };
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Show floating view", null, (_, _) => SetViewer(true));
         trayMenu.Items.Add("Disconnect desktop and exit", null, (_, _) =>
@@ -100,30 +145,135 @@ internal sealed class RdpWindow : Form
         };
     }
 
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var parameters = base.CreateParams;
+            // Standard resizable app window semantics, with one custom-drawn title bar.
+            // TOOLWINDOW excluded the PiP from accessibility / window discovery.
+            parameters.Style |= 0x00cf0000;
+            parameters.ExStyle = (parameters.ExStyle & ~0x40080) | (ViewerVisible ? 0x40000 : 0x80);
+            return parameters;
+        }
+    }
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        int preference = 2;
+        _ = Native.DwmSetWindowAttribute(Handle, 33, ref preference, sizeof(int));
+    }
     protected override void WndProc(ref Message message)
     {
-        // Treat the standard title-bar minimize action like collapsing the viewer.
-        // Never minimize the native RDP host: doing so can suspend remote rendering.
+        if (message.Msg == 0x83 && message.WParam != 0) { message.Result = 0; return; }
+        if (message.Msg == 0x112 && ((long)message.WParam & 0xfff0) == 0xf030)
+        {
+            if (expanded) ToggleMaximize(); else Expand();
+            return;
+        }
         if (message.Msg == 0x112 && ((long)message.WParam & 0xfff0) == 0xf020)
         {
             if (expanded) Collapse(); else SetViewer(false);
             return;
         }
+        if (message.Msg == 0x214)
+        {
+            var rect = Marshal.PtrToStructure<ViewerGeometry.NativeRect>(message.LParam);
+            var fitted = ViewerGeometry.Resize(rect.ToRectangle(), desktopSize, expanded ? 38 * DeviceDpi / 96 : 0,
+                (int)message.WParam, Screen.FromControl(this).WorkingArea.Size);
+            Marshal.StructureToPtr(new ViewerGeometry.NativeRect(fitted), message.LParam, false);
+            message.Result = 1; return;
+        }
         base.WndProc(ref message);
+        if (message.Msg == 0x84 && WindowState == FormWindowState.Normal && restoredBounds is null)
+        {
+            var point = PointToClient(new Point(unchecked((short)(long)message.LParam), unchecked((short)((long)message.LParam >> 16))));
+            int edge = Math.Max(5, DeviceDpi * 5 / 96);
+            bool left = point.X < edge, right = point.X >= ClientSize.Width - edge;
+            bool top = point.Y < edge, bottom = point.Y >= ClientSize.Height - edge;
+            message.Result = top && left ? 13 : top && right ? 14 : bottom && left ? 16 : bottom && right ? 17 :
+                left ? 10 : right ? 11 : top ? 12 : bottom ? 15 : message.Result;
+        }
+    }
+    private void ToggleMaximize()
+    {
+        if (!expanded) return;
+        if (restoredBounds is Rectangle bounds) { restoredBounds = null; Bounds = bounds; }
+        else { restoredBounds = Bounds; Bounds = ViewerGeometry.Fit(desktopSize, Screen.FromControl(this).WorkingArea, 38 * DeviceDpi / 96, 1); }
+    }
+    private void LayoutChrome()
+    {
+        if (header is null) return;
+        int U(int value) => value * DeviceDpi / 96;
+        // Explicit bounds avoid Dock/BringToFront ordering putting the header over RDP.
+        // Only PiP hover chrome is an overlay; expanded chrome reserves its own row.
+        header.Dock = DockStyle.None;
+        header.Visible = expanded || pipHeaderRevealed;
+        header.SetBounds(1, 1, ClientSize.Width - 2, U(38));
+        int previewTop = expanded ? U(38) + 1 : 1;
+        surface.SetBounds(1, previewTop, Math.Max(1, ClientSize.Width - 2), Math.Max(1, ClientSize.Height - previewTop - 1));
+        connectionDot.Visible = !expanded && !pipHeaderRevealed;
+        connectionDot.SetBounds(ClientSize.Width - U(30), U(10), U(18), U(18));
+        expand.Text = expanded ? "Collapse" : "Expand view";
+        expand.AccessibleName = expand.Text;
+        int right = header.ClientSize.Width - U(4);
+        void Place(Control control, bool visible, int width)
+        {
+            control.Visible = visible;
+            if (!visible) return;
+            right -= U(width); control.SetBounds(right, U(4), U(width), U(30));
+        }
+        Place(close, true, 30);
+        Place(maximize, expanded, 30);
+        Place(collapse, expanded, 30);
+        Place(settingsButton, true, 30);
+        if (HumanControl) right -= U(8);
+        Place(returnToAgent, HumanControl, expanded ? 138 : 115);
+        title.SetBounds(U(12), 0, U(108), header.Height);
+        int statusStart = expanded && !HumanControl ? U(388) : U(122);
+        status.SetBounds(statusStart, 0, Math.Max(0, right - statusStart - U(8)), header.Height);
+        actions.Padding = expanded ? new Padding(U(8), U(3), U(8), U(3)) : new Padding(U(8));
+        actions.SetBounds(expanded ? U(128) : U(12), expanded ? 1 : ClientSize.Height - U(60),
+            Math.Min(U(244), ClientSize.Width - U(24)), U(expanded ? 38 : 48));
+        header.BringToFront(); actions.BringToFront(); connectionDot.BringToFront();
+    }
+
+    internal void UpdateHover(Point screenPoint)
+    {
+        bool reveal = !expanded && ViewerVisible && (settingsMenu.Visible ||
+            Bounds.Contains(screenPoint) && PointToClient(screenPoint).Y < 42 * DeviceDpi / 96);
+        if (pipHeaderRevealed == reveal) return;
+        pipHeaderRevealed = reveal; LayoutChrome();
     }
 
     internal void ObservePointer(bool down, bool outside, bool externalForeground)
     {
-        if (down && !mouseWasDown && outside && externalForeground && expanded && HumanControl &&
-            ResumeMode == ResumeMode.OnClickOutside && !changingLayout) ReturnToAgent();
+        if (down && !mouseWasDown && outside && externalForeground && expanded && !changingLayout)
+        {
+            if (takeoverPending && CollapseOnClickOutside) ReturnToAgent();
+            if (HumanControl && ResumeMode == ResumeMode.OnClickOutside)
+            {
+                SetHumanControl(false); ControlRequested?.Invoke(false);
+            }
+            if (CollapseOnClickOutside) { SetPip(); UpdateStatus(); }
+        }
+        if (down && !mouseWasDown && outside && !expanded) actions.Visible = false;
         mouseWasDown = down;
     }
 
-    private static Button MakeButton(string text, int width) => new() { Text = text, Width = width, Height = 32,
-        FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(42, 49, 57), ForeColor = Color.White,
+    private static Button MakeButton(string text, int width) => new ViewerActionButton {
+        Text = text, Width = width, Height = 32, BackColor = Color.FromArgb(48, 56, 64),
+        ForeColor = Color.White, Font = new Font("Segoe UI", 9), Margin = new Padding(0, 0, 6, 0),
         Cursor = Cursors.Hand, TabStop = true, AccessibleName = text };
 
-    internal void RevealControls() { if (!expanded || !HumanControl) actions.Visible = true; }
+    internal void ToggleControls()
+    {
+        if (expanded && HumanControl) return;
+        bool show = !actions.Visible;
+        LayoutChrome(); actions.Visible = show;
+        if (show) actions.BringToFront();
+    }
+    internal void RevealControls() { if (!expanded || !HumanControl) { LayoutChrome(); actions.Visible = true; actions.BringToFront(); } }
     internal void RequestTakeover()
     {
         if (!actions.Visible || !take.Enabled) return;
@@ -136,12 +286,14 @@ internal sealed class RdpWindow : Form
         changingLayout = true;
         try
         {
-            expanded = true; FormBorderStyle = FormBorderStyle.Sizable; TopMost = false; ShowInTaskbar = true;
+            expanded = true; restoredBounds = null; TopMost = true; ShowInTaskbar = true;
             var area = Screen.FromControl(this).WorkingArea;
-            Bounds = new Rectangle(area.X + area.Width / 12, area.Y + area.Height / 12, area.Width * 5 / 6, area.Height * 5 / 6);
-            actions.Visible = !HumanControl;
+            Bounds = ViewerGeometry.Fit(desktopSize, area, 38 * DeviceDpi / 96, 5d / 6);
+            LayoutChrome(); actions.Visible = !HumanControl;
+            Native.EnableWindow(Rdp.Handle, HumanControl); Rdp.Enabled = HumanControl; Rdp.TabStop = HumanControl;
             if (ViewerVisible) Native.ShowWindow(Handle, 5);
             Activate();
+            if (HumanControl) Rdp.Focus();
         }
         finally { changingLayout = false; }
     }
@@ -159,14 +311,15 @@ internal sealed class RdpWindow : Form
         changingLayout = true;
         try
         {
-            expanded = false; FormBorderStyle = FormBorderStyle.SizableToolWindow; WindowState = FormWindowState.Normal; TopMost = true; ShowInTaskbar = false;
+            expanded = false; pipHeaderRevealed = false; restoredBounds = null; WindowState = FormWindowState.Normal; TopMost = true; ShowInTaskbar = true;
             var area = Screen.FromPoint(preferences.Position ?? Cursor.Position).WorkingArea;
-            var size = preferences.Size ?? new Size(400, 270);
-            size = new Size(Math.Clamp(size.Width, 280, Math.Max(280, area.Width)), Math.Clamp(size.Height, 190, Math.Max(190, area.Height)));
+            var size = preferences.Size ?? new Size(416, 236);
+            size.Height = (int)Math.Round((size.Width - 2d) * desktopSize.Height / desktopSize.Width) + 2;
+            size = new Size(Math.Clamp(size.Width, 360, Math.Max(360, area.Width)), Math.Clamp(size.Height, 200, Math.Max(200, area.Height)));
             var point = preferences.Position ?? new Point(area.Right - size.Width - 24, area.Bottom - size.Height - 24);
             Bounds = new Rectangle(Math.Clamp(point.X, area.Left, Math.Max(area.Left, area.Right - size.Width)),
                 Math.Clamp(point.Y, area.Top, Math.Max(area.Top, area.Bottom - size.Height)), size.Width, size.Height);
-            actions.Visible = false;
+            LayoutChrome(); actions.Visible = false;
             // Manual pause can survive collapse, but PiP itself never forwards desktop input.
             Native.EnableWindow(Rdp.Handle, false); Rdp.Enabled = false; Rdp.TabStop = false;
             if (ViewerVisible) Native.ShowWindow(Handle, 4); // Style/taskbar changes can recreate the form HWND.
@@ -182,9 +335,15 @@ internal sealed class RdpWindow : Form
     internal void SetConnectionStatus(string? value) { connectionStatus = value; UpdateStatus(); }
     private void UpdateStatus()
     {
-        status.Text = connectionStatus ?? (HumanControl ? "You have control - Agent paused" : agentConnected ? "Agent connected" : "Waiting for agent");
-        returnToAgent.Visible = HumanControl;
-        take.Enabled = connectionStatus is null && !takeoverPending;
+        status.Text = connectionStatus ?? (HumanControl ? (expanded ? "You have control - Agent paused" : "Paused") : agentConnected ? "Agent connected" : "Waiting for agent");
+        connectionDot.Connected = agentConnected && connectionStatus is null;
+        connectionDot.Paused = HumanControl;
+        tips.SetToolTip(connectionDot, status.Text);
+        take.Text = HumanControl ? "Taken control" : "Take over";
+        take.AccessibleName = take.Text;
+        take.BackColor = HumanControl ? Color.FromArgb(62, 68, 74) : Color.FromArgb(19, 125, 112);
+        LayoutChrome();
+        take.Enabled = !HumanControl && connectionStatus is null && !takeoverPending;
     }
     internal void SetHumanControl(bool enabled)
     {
@@ -199,6 +358,7 @@ internal sealed class RdpWindow : Form
     }
     internal void SetViewer(bool show)
     {
+        if (!show) settingsMenu.Hide();
         if (show && ViewerVisible) return;
         if (!show) SavePosition();
         if (!show && (takeoverPending || HumanControl && ResumeMode != ResumeMode.Manual)) ReturnToAgent();
@@ -215,7 +375,7 @@ internal sealed class RdpWindow : Form
     }
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { outsideClick.Dispose(); tray.Dispose(); }
+        if (disposing) { outsideClick.Dispose(); tray.Dispose(); tips.Dispose(); settingsMenu.Dispose(); appIcon.Dispose(); }
         base.Dispose(disposing);
     }
 }
@@ -224,6 +384,7 @@ internal enum ResumeMode { OnClose, OnClickOutside, Manual }
 internal sealed class ViewerPreferences
 {
     public ResumeMode Resume { get; set; } = ResumeMode.OnClose;
+    public bool CollapseOnClickOutside { get; set; } = true;
     public Point? Position { get; set; }
     public Size? Size { get; set; }
     internal bool Persist { get; init; } = true;

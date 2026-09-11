@@ -98,7 +98,7 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
             state = "connecting"; connectionLost = false; lastError = null;
             viewer = await Ui(() =>
             {
-                var window = new RdpWindow();
+                var window = new RdpWindow(desktopSize: new Size(width, height));
                 window.Rdp.Lost += reason => { connectionLost = true; lastError = reason; window.SetConnectionStatus("Disconnected - reconnect to resume"); worker?.Dispose(); };
                 window.ControlRequested += requested => _ = ChangeControlAsync(requested);
                 try
