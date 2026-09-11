@@ -232,9 +232,15 @@ internal sealed class RdpWindow : Form
         title.SetBounds(U(12), 0, U(108), header.Height);
         int statusStart = expanded && !HumanControl ? U(388) : U(122);
         status.SetBounds(statusStart, 0, Math.Max(0, right - statusStart - U(8)), header.Height);
+        bool compactActions = !expanded && ClientSize.Width < U(268);
+        actions.FlowDirection = compactActions ? FlowDirection.TopDown : FlowDirection.LeftToRight;
         actions.Padding = expanded ? new Padding(U(8), U(3), U(8), U(3)) : new Padding(U(8));
         actions.SetBounds(expanded ? U(128) : U(12), expanded ? 1 : ClientSize.Height - U(60),
-            Math.Min(U(244), ClientSize.Width - U(24)), U(expanded ? 38 : 48));
+            Math.Max(1, Math.Min(U(244), ClientSize.Width - U(24))), U(expanded ? 38 : compactActions ? 86 : 48));
+        if (compactActions) actions.Top = ClientSize.Height - actions.Height - U(12);
+        take.Size = new Size(compactActions ? Math.Max(1, actions.Width - U(16)) : U(110), U(32));
+        expand.Size = new Size(compactActions ? Math.Max(1, actions.Width - U(16)) : U(112), U(32));
+        take.Margin = compactActions ? new Padding(0, 0, 0, U(6)) : new Padding(0, 0, U(6), 0);
         header.BringToFront(); actions.BringToFront(); connectionDot.BringToFront();
     }
 

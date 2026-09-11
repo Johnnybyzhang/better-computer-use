@@ -400,8 +400,34 @@ await Test("View PiP preserves wide and portrait desktop aspect ratios", () => S
         double scaleX = (viewer.ClientSize.Width - 2d) / desktop.Width;
         double scaleY = (viewer.ClientSize.Height - 2d) / desktop.Height;
         Assert(Math.Abs(scaleX - scaleY) < .002);
+        viewer.RevealControls();
+        var panel = viewer.Controls.OfType<System.Windows.Forms.FlowLayoutPanel>().Single();
+        foreach (System.Windows.Forms.Control button in panel.Controls)
+            Assert(panel.ClientRectangle.Contains(button.Bounds));
         viewer.CloseHost();
     }
+}));
+await Test("View stale callbacks cannot fault a replacement or leave takeover latched", () => Sta(() =>
+{
+    using var dispatcher = new System.Windows.Forms.Control();
+    using var oldViewer = new RdpWindow(new ViewerPreferences { Persist = false });
+    using var currentViewer = new RdpWindow(new ViewerPreferences { Persist = false });
+    var manager = new SessionManager(dispatcher, null, false);
+    const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+    var viewerField = typeof(SessionManager).GetField("viewer", flags)!;
+    viewerField.SetValue(manager, currentViewer);
+    typeof(SessionManager).GetMethod("OnViewerLost", flags)!.Invoke(manager, [oldViewer, "stale disconnect"]);
+    Assert(!(bool)typeof(SessionManager).GetField("connectionLost", flags)!.GetValue(manager)!);
+    var gate = (SemaphoreSlim)typeof(SessionManager).GetField("gate", flags)!.GetValue(manager)!;
+    gate.Wait();
+    var pending = (Task)typeof(SessionManager).GetMethod("ChangeControlAsync", flags)!.Invoke(manager, [currentViewer, true])!;
+    viewerField.SetValue(manager, null); gate.Release();
+    var deadline = DateTime.UtcNow.AddSeconds(10);
+    while (!pending.IsCompleted && DateTime.UtcNow < deadline)
+    { System.Windows.Forms.Application.DoEvents(); Thread.Sleep(1); }
+    Assert(pending.IsCompleted); pending.GetAwaiter().GetResult();
+    Assert(!(bool)typeof(SessionManager).GetField("humanControl", flags)!.GetValue(manager)!);
+    manager.DisposeAsync().AsTask().GetAwaiter().GetResult();
 }));
 await Test("View connection control supports keyboard activation", () => Sta(() =>
 {

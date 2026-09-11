@@ -100,8 +100,9 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
             viewer = await Ui(() =>
             {
                 var window = new RdpWindow(desktopSize: new Size(width, height));
-                window.Rdp.Lost += reason => { connectionLost = true; lastError = reason; window.SetConnectionStatus("Disconnected - reconnect to resume"); worker?.Dispose(); };
-                window.ControlRequested += requested => _ = ChangeControlAsync(requested);
+                viewer = window;
+                window.Rdp.Lost += reason => OnViewerLost(window, reason);
+                window.ControlRequested += requested => _ = ChangeControlAsync(window, requested);
                 try
                 {
                     window.Show(); window.SetHumanControl(false); window.SetAgentConnected(agentConnected); window.SetConnectionStatus("Connecting..."); window.Rdp.Connect(width, height);
@@ -146,8 +147,16 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
         finally { gate.Release(); }
     }
 
-    private async Task ChangeControlAsync(bool requested)
+    private void OnViewerLost(RdpWindow source, string reason)
     {
+        if (!ReferenceEquals(viewer, source)) return;
+        connectionLost = true; lastError = reason;
+        source.SetConnectionStatus("Disconnected - reconnect to resume"); worker?.Dispose();
+    }
+
+    private async Task ChangeControlAsync(RdpWindow source, bool requested)
+    {
+        if (!ReferenceEquals(viewer, source)) return;
         var revision = Interlocked.Increment(ref controlRevision);
         // Human takeover prevents newly arriving operations before waiting for the in-flight operation.
         if (requested) humanControl = true;
@@ -155,7 +164,7 @@ internal sealed class SessionManager(Control dispatcher, HelperIdentity? helper,
         try
         {
             if (revision != Interlocked.Read(ref controlRevision)) return;
-            if (viewer is null) return;
+            if (!ReferenceEquals(viewer, source)) { humanControl = false; return; }
             if (requested && (connectionLost || state != "ready" || !await Ui(() => viewer.ViewerVisible))) { humanControl = false; await Ui(() => viewer.SetHumanControl(false)); return; }
             await Ui(() => viewer.SetHumanControl(requested));
             humanControl = requested;
